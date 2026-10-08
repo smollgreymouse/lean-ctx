@@ -1,0 +1,114 @@
+name: Harr binary release
+
+on:
+  push:
+    tags:
+      - "harr-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-unix:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            musl: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04-arm
+            musl: true
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            macos_deployment_target: "11.0"
+          - target: aarch64-apple-darwin
+            os: macos-15
+            macos_deployment_target: "11.0"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: matrix.musl == true
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [[ "${{ matrix.target }}" == aarch64-* ]]; then
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+            echo "CC_aarch64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+            echo "AR_aarch64_unknown_linux_musl=ar" >> "$GITHUB_ENV"
+            echo "RANLIB_aarch64_unknown_linux_musl=ranlib" >> "$GITHUB_ENV"
+            echo "CFLAGS_aarch64_unknown_linux_musl=-mno-outline-atomics" >> "$GITHUB_ENV"
+          fi
+      - name: Build
+        working-directory: rust
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          cd "rust/target/${{ matrix.target }}/release"
+          tar czf "../../../../lean-ctx-${{ matrix.target }}.tar.gz" lean-ctx
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-ctx-${{ matrix.target }}
+          path: lean-ctx-${{ matrix.target }}.tar.gz
+
+  build-windows:
+    name: Build x86_64-pc-windows-msvc
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build
+        working-directory: rust
+        shell: pwsh
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path "rust/target/x86_64-pc-windows-msvc/release/lean-ctx.exe" -DestinationPath "lean-ctx-x86_64-pc-windows-msvc.zip"
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-ctx-x86_64-pc-windows-msvc
+          path: lean-ctx-x86_64-pc-windows-msvc.zip
+
+  release:
+    name: Publish Harr binary release
+    needs: [build-unix, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/harr-v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lean-ctx-*
+          merge-multiple: true
+      - name: Checksums
+        shell: bash
+        run: sha256sum lean-ctx-* > SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "LeanCTX ${GITHUB_REF_NAME} for Harr" \
+            --notes "Harr-maintained LeanCTX build with transparent downstream MCP progress forwarding." \
+            lean-ctx-* SHA256SUMS

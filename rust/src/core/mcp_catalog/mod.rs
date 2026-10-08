@@ -68,6 +68,17 @@ pub async fn proxy(
     arguments: Map<String, Value>,
     project_root: &str,
 ) -> Result<String, String> {
+    proxy_with_progress(cfg, handle, arguments, project_root, None).await
+}
+
+/// Proxy a server::tool call and optionally forward downstream MCP progress.
+pub async fn proxy_with_progress(
+    cfg: &GatewayConfig,
+    handle: &str,
+    arguments: Map<String, Value>,
+    project_root: &str,
+    progress: Option<client::ProgressCallback>,
+) -> Result<String, String> {
     let (server_name, tool) = catalog::split_namespaced(handle)
         .ok_or_else(|| format!("invalid tool handle `{handle}` (expected `server::tool`)"))?;
     let server = cfg
@@ -79,7 +90,9 @@ pub async fn proxy(
     let call = admitted_call(
         &downstream(server_name, &resolved, tool),
         arguments,
-        |arguments| client::proxy_call(&resolved, tool, arguments, timeout),
+        |arguments| {
+            client::proxy_call_with_progress(&resolved, tool, arguments, timeout, progress)
+        },
     )
     .await;
     let source = format!("mcp://{handle}");

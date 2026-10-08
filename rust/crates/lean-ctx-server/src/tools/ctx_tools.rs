@@ -30,6 +30,15 @@ use mcp_catalog::runtime::block_on;
 /// forwarded to [`mcp_catalog::proxy`] so output post-processing (#1095) can index
 /// downstream results into the project's stores. Empty = no project scope.
 pub fn run(args: &Map<String, Value>, project_root: &str) -> Result<String, String> {
+    run_with_progress(args, project_root, None)
+}
+
+/// Execute a ctx_tools action with optional UI-only downstream progress forwarding.
+pub fn run_with_progress(
+    args: &Map<String, Value>,
+    project_root: &str,
+    progress: Option<mcp_catalog::client::ProgressCallback>,
+) -> Result<String, String> {
     let cfg = Config::load();
     if !cfg.gateway.enabled_effective() {
         return Err(DISABLED_HINT.to_string());
@@ -78,11 +87,12 @@ pub fn run(args: &Map<String, Value>, project_root: &str) -> Result<String, Stri
             };
             // K13: no engine rule regulates a downstream server's tools.
             lean_ctx_hive::metrics_v2::signals::mcp_relay_call(tool);
-            block_on(mcp_catalog::proxy(
+            block_on(mcp_catalog::proxy_with_progress(
                 &cfg.gateway,
                 tool,
                 arguments,
                 project_root,
+                progress,
             ))?
         }
         other => Err(format!(
