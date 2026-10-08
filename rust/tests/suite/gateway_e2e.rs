@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    ProgressNotificationParam, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -71,19 +71,24 @@ impl ServerHandler for EchoServer {
                 .clone(),
             ),
         );
+        let progress = Tool::new(
+            "progress",
+            "Emit request-scoped progress then return done",
+            Arc::new(json!({ "type": "object" }).as_object().unwrap().clone()),
+        );
         std::future::ready(Ok(ListToolsResult {
-            tools: vec![echo, add],
+            tools: vec![echo, add, progress],
             ..Default::default()
         }))
     }
 
-    fn call_tool(
+    async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, ErrorData>> {
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
         let args = request.arguments.unwrap_or_default();
-        std::future::ready(match request.name.as_ref() {
+        match request.name.as_ref() {
             "echo" => {
                 let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 Ok(CallToolResult::success(vec![ContentBlock::text(format!(
@@ -103,11 +108,34 @@ impl ServerHandler for EchoServer {
                     (a + b).to_string(),
                 )]))
             }
+            "progress" => {
+                let token = context
+                    .meta
+                    .get_progress_token()
+                    .ok_or_else(|| ErrorData::invalid_params("missing progress token", None))?;
+                for step in 1..=3 {
+                    context
+                        .peer
+                        .notify_progress(
+                            ProgressNotificationParam::new(token.clone(), step as f64)
+                                .with_total(3.0)
+                                .with_message(format!("step {step}")),
+                        )
+                        .await
+                        .map_err(|error| {
+                            ErrorData::internal_error(
+                                format!("failed to send progress: {error}"),
+                                None,
+                            )
+                        })?;
+                }
+                Ok(CallToolResult::success(vec![ContentBlock::text("done")]))
+            }
             other => Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
             )),
-        })
+        }
     }
 }
 
@@ -120,7 +148,8 @@ async fn connect_to_echo_server() -> client::ClientService {
             let _ = server.waiting().await;
         }
     });
-    ().serve(client_transport)
+    client::GatewayClientHandler::default()
+        .serve(client_transport)
         .await
         .expect("client initialize handshake")
 }
@@ -160,6 +189,52 @@ async fn gateway_client_proxies_a_call() {
         .await
         .expect("call echo");
     assert_eq!(client::result_to_text(&echoed).trim(), "echo:hello");
+
+    let _ = service.cancel().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gateway_client_forwards_request_scoped_progress() {
+    let service = connect_to_echo_server().await;
+    let timeout = Duration::from_secs(5);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_for_callback = seen.clone();
+    let callback: client::ProgressCallback = Arc::new(move |update| {
+        seen_for_callback
+            .lock()
+            .expect("progress collection lock")
+            .push(update);
+    });
+
+    let result = client::call_tool_on_with_progress(
+        &service,
+        "progress",
+        serde_json::Map::new(),
+        timeout,
+        Some(callback),
+    )
+    .await
+    .expect("call progress");
+
+    assert_eq!(client::result_to_text(&result).trim(), "done");
+    let updates = seen.lock().expect("progress collection lock");
+    assert_eq!(
+        updates.len(),
+        3,
+        "expected every downstream progress update"
+    );
+    assert_eq!(
+        updates.iter().map(|item| item.progress).collect::<Vec<_>>(),
+        vec![1.0, 2.0, 3.0]
+    );
+    assert_eq!(
+        updates
+            .iter()
+            .map(|item| item.message.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("step 1"), Some("step 2"), Some("step 3")]
+    );
+    assert!(updates.iter().all(|item| item.total == Some(3.0)));
 
     let _ = service.cancel().await;
 }

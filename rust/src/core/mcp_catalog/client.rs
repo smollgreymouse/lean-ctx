@@ -12,20 +12,53 @@
 //! [`super::catalog`].
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
-use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
-use rmcp::service::{RoleClient, RunningService};
+use futures::StreamExt;
+use rmcp::handler::client::progress::ProgressDispatcher;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ClientRequest, Request, ServerResult, Tool,
+};
+use rmcp::service::{PeerRequestOptions, RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
+use rmcp::{ClientHandler, ServiceExt};
 use serde_json::{Map, Value};
 
 use super::config::ResolvedTransport;
 
+/// One request-scoped downstream progress update.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgressUpdate {
+    pub progress: f64,
+    pub total: Option<f64>,
+    pub message: Option<String>,
+}
+
+/// Callback used by the gateway to forward downstream MCP progress without
+/// mixing it into the terminal tool result.
+pub type ProgressCallback = Arc<dyn Fn(ProgressUpdate) + Send + Sync>;
+
+/// Downstream client handler that demultiplexes request-scoped MCP progress.
+#[derive(Debug, Clone, Default)]
+pub struct GatewayClientHandler {
+    progress_handler: ProgressDispatcher,
+}
+
+impl ClientHandler for GatewayClientHandler {
+    async fn on_progress(
+        &self,
+        params: rmcp::model::ProgressNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleClient>,
+    ) {
+        self.progress_handler.handle_notification(params).await;
+    }
+}
+
 /// A connected downstream MCP client session. Transport-erased: stdio, HTTP,
 /// and (in tests) in-process duplex all collapse to this one type.
-pub type ClientService = RunningService<RoleClient, ()>;
+pub type ClientService = RunningService<RoleClient, GatewayClientHandler>;
 
 /// Open a connection to a downstream MCP server (runs the MCP `initialize`
 /// handshake). The whole connect is bounded by `timeout`.
@@ -55,7 +88,8 @@ pub async fn open(
                 }
                 let child = TokioChildProcess::new(cmd)
                     .map_err(|e| format!("spawn `{command}` failed: {e}"))?;
-                ().serve(child)
+                GatewayClientHandler::default()
+                    .serve(child)
                     .await
                     .map_err(|e| format!("MCP handshake failed (stdio): {e}"))
             }
@@ -73,7 +107,8 @@ pub async fn open(
                     return open_oauth(url, cfg).await;
                 }
                 let t = StreamableHttpClientTransport::from_config(cfg);
-                ().serve(t)
+                GatewayClientHandler::default()
+                    .serve(t)
                     .await
                     .map_err(|e| format!("MCP handshake failed (http): {e}"))
             }
@@ -93,7 +128,8 @@ async fn open_oauth(
 ) -> Result<ClientService, String> {
     let client = super::oauth::authorized_client(url, &server_label(url)).await?;
     let t = StreamableHttpClientTransport::with_client(client, cfg);
-    ().serve(t)
+    GatewayClientHandler::default()
+        .serve(t)
         .await
         .map_err(|e| format!("MCP handshake failed (http, OAuth): {e}"))
 }
@@ -179,9 +215,20 @@ pub async fn proxy_call(
     arguments: Map<String, Value>,
     timeout: Duration,
 ) -> Result<CallToolResult, String> {
+    proxy_call_with_progress(transport, tool, arguments, timeout, None).await
+}
+
+/// Proxy a single tool call and optionally forward request-scoped MCP progress.
+pub async fn proxy_call_with_progress(
+    transport: &ResolvedTransport,
+    tool: &str,
+    arguments: Map<String, Value>,
+    timeout: Duration,
+    progress: Option<ProgressCallback>,
+) -> Result<CallToolResult, String> {
     let key = super::pool::key(transport);
     let service = super::pool::acquire(transport, timeout).await?;
-    let result = call_tool_on(&service, tool, arguments, timeout).await;
+    let result = call_tool_on_with_progress(&service, tool, arguments, timeout, progress).await;
     if result.is_err() {
         super::pool::evict(key);
     }
@@ -230,11 +277,59 @@ pub async fn call_tool_on(
     arguments: Map<String, Value>,
     timeout: Duration,
 ) -> Result<CallToolResult, String> {
+    call_tool_on_with_progress(service, tool, arguments, timeout, None).await
+}
+
+/// Call a tool on an already-connected session and forward only progress that
+/// belongs to this exact request. The terminal result remains unchanged.
+pub async fn call_tool_on_with_progress(
+    service: &ClientService,
+    tool: &str,
+    arguments: Map<String, Value>,
+    timeout: Duration,
+    progress: Option<ProgressCallback>,
+) -> Result<CallToolResult, String> {
     let param = CallToolRequestParams::new(tool.to_string()).with_arguments(arguments);
-    tokio::time::timeout(timeout, service.call_tool(param))
+    let request = ClientRequest::CallToolRequest(Request::new(param));
+    let handle = service
+        .send_request_with_option(request, PeerRequestOptions::with_timeout(timeout))
         .await
-        .map_err(|_| "downstream tools/call timed out".to_string())
-        .and_then(|r| r.map_err(|e| format!("downstream tools/call failed: {e}")))
+        .map_err(|e| format!("downstream tools/call failed: {e}"))?;
+
+    let response = if let Some(callback) = progress {
+        let mut subscriber = service
+            .service()
+            .progress_handler
+            .subscribe(handle.progress_token.clone())
+            .await;
+        let response = handle.await_response();
+        tokio::pin!(response);
+
+        loop {
+            tokio::select! {
+                result = &mut response => break result,
+                notification = subscriber.next() => {
+                    if let Some(notification) = notification {
+                        callback(ProgressUpdate {
+                            progress: notification.progress,
+                            total: notification.total,
+                            message: notification.message,
+                        });
+                    }
+                }
+            }
+        }
+    } else {
+        handle.await_response().await
+    }
+    .map_err(|e| format!("downstream tools/call failed: {e}"));
+
+    match response? {
+        ServerResult::CallToolResult(result) => Ok(result),
+        other => Err(format!(
+            "downstream tools/call returned unexpected result: {other:?}"
+        )),
+    }
 }
 
 #[cfg(test)]

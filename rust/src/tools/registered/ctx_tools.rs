@@ -53,7 +53,21 @@ impl McpTool for CtxToolsTool {
         // `project_root` is threaded through so the gateway's L3 consolidation
         // (#1095) can write addon output into the project's BM25/graph/knowledge
         // stores. Empty (one-shot CLI ctx) disables project-scoped indexing.
-        match crate::tools::ctx_tools::run(args, &ctx.project_root) {
+        let progress = ctx.progress_sender.as_ref().and_then(|shared| {
+            shared
+                .lock()
+                .ok()
+                .and_then(|sender| sender.clone())
+                .map(|sender| {
+                    std::sync::Arc::new(
+                        move |update: crate::core::mcp_catalog::client::ProgressUpdate| {
+                            sender.send(update.progress, update.total, update.message);
+                        },
+                    ) as crate::core::mcp_catalog::client::ProgressCallback
+                })
+        });
+
+        match crate::tools::ctx_tools::run_with_progress(args, &ctx.project_root, progress) {
             Ok(text) => Ok(ToolOutput::simple(text)),
             Err(e) => Err(ErrorData::invalid_params(e, None)),
         }
