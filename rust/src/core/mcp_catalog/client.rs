@@ -13,12 +13,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
 use rmcp::handler::client::progress::ProgressDispatcher;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientRequest, Request, ServerResult, Tool,
+    CallToolRequestParams, CallToolResult, ClientRequest, GetMeta, NumberOrString, ProgressToken,
+    Request, ServerResult, Tool,
 };
 use rmcp::service::{PeerRequestOptions, RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -39,6 +41,15 @@ pub struct ProgressUpdate {
 /// Callback used by the gateway to forward downstream MCP progress without
 /// mixing it into the terminal tool result.
 pub type ProgressCallback = Arc<dyn Fn(ProgressUpdate) + Send + Sync>;
+
+static DOWNSTREAM_PROGRESS_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_downstream_progress_token() -> ProgressToken {
+    let seq = DOWNSTREAM_PROGRESS_SEQ.fetch_add(1, Ordering::Relaxed);
+    ProgressToken(NumberOrString::String(
+        format!("leanctx-gateway-{seq}").into(),
+    ))
+}
 
 /// Downstream client handler that demultiplexes request-scoped MCP progress.
 #[derive(Debug, Clone, Default)]
@@ -290,18 +301,22 @@ pub async fn call_tool_on_with_progress(
     progress: Option<ProgressCallback>,
 ) -> Result<CallToolResult, String> {
     let param = CallToolRequestParams::new(tool.to_string()).with_arguments(arguments);
-    let request = ClientRequest::CallToolRequest(Request::new(param));
+    let mut request = ClientRequest::CallToolRequest(Request::new(param));
+
+    let mut subscriber = None;
+    if progress.is_some() {
+        let token = next_downstream_progress_token();
+        request.get_meta_mut().set_progress_token(token.clone());
+        subscriber = Some(service.service().progress_handler.subscribe(token).await);
+    }
+
     let handle = service
         .send_request_with_option(request, PeerRequestOptions::with_timeout(timeout))
         .await
         .map_err(|e| format!("downstream tools/call failed: {e}"))?;
 
     let response = if let Some(callback) = progress {
-        let mut subscriber = service
-            .service()
-            .progress_handler
-            .subscribe(handle.progress_token.clone())
-            .await;
+        let mut subscriber = subscriber.expect("progress subscriber must exist");
         let response = handle.await_response();
         tokio::pin!(response);
 
