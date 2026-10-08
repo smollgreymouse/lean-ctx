@@ -5,13 +5,21 @@ use rmcp::service::Peer;
 /// Sends MCP progress notifications to the client during long-running tool operations.
 #[derive(Clone)]
 pub struct ProgressSender {
-    peer: Peer<RoleServer>,
+    tx: tokio::sync::mpsc::UnboundedSender<ProgressNotificationParam>,
     token: ProgressToken,
 }
 
 impl ProgressSender {
     pub fn new(peer: Peer<RoleServer>, token: ProgressToken) -> Self {
-        Self { peer, token }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProgressNotificationParam>();
+        tokio::spawn(async move {
+            while let Some(params) = rx.recv().await {
+                if let Err(e) = peer.notify_progress(params).await {
+                    tracing::debug!("[progress] notify failed: {e}");
+                }
+            }
+        });
+        Self { tx, token }
     }
 
     pub fn send(&self, progress: f64, total: Option<f64>, message: Option<String>) {
@@ -23,12 +31,9 @@ impl ProgressSender {
         if let Some(message) = message {
             params = params.with_message(message);
         }
-        let peer = self.peer.clone();
-        tokio::spawn(async move {
-            if let Err(e) = peer.notify_progress(params).await {
-                tracing::debug!("[progress] notify failed: {e}");
-            }
-        });
+        if self.tx.send(params).is_err() {
+            tracing::debug!("[progress] progress receiver already closed");
+        }
     }
 }
 

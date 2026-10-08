@@ -621,10 +621,16 @@ impl<R: ServiceRole> Peer<R> {
         options: PeerRequestOptions,
     ) -> Result<RequestHandle<R>, ServiceError> {
         let id = self.request_id_provider.next_request_id();
-        let progress_token = self.progress_token_provider.next_progress_token();
         if let Some(meta) = options.meta.clone() {
             request.get_meta_mut().extend(meta);
         }
+        // Respect an explicitly supplied progressToken. This lets callers
+        // subscribe before the request is put on the wire, avoiding a race
+        // where an immediate first progress notification arrives too early.
+        let progress_token = request
+            .get_meta()
+            .get_progress_token()
+            .unwrap_or_else(|| self.progress_token_provider.next_progress_token());
         request
             .get_meta_mut()
             .set_progress_token(progress_token.clone());
