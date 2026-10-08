@@ -53,21 +53,31 @@ impl McpTool for CtxToolsTool {
         // `project_root` is threaded through so the gateway's L3 consolidation
         // (#1095) can write addon output into the project's BM25/graph/knowledge
         // stores. Empty (one-shot CLI ctx) disables project-scoped indexing.
-        let progress = ctx.progress_sender.as_ref().and_then(|shared| {
-            shared
-                .lock()
-                .ok()
-                .and_then(|sender| sender.clone())
-                .map(|sender| {
-                    std::sync::Arc::new(
-                        move |update: crate::core::mcp_catalog::client::ProgressUpdate| {
-                            sender.send(update.progress, update.total, update.message);
-                        },
-                    ) as crate::core::mcp_catalog::client::ProgressCallback
-                })
+        let progress_sender = ctx
+            .progress_sender
+            .as_ref()
+            .and_then(|shared| shared.lock().ok().and_then(|sender| sender.clone()));
+
+        let progress = progress_sender.clone().map(|sender| {
+            std::sync::Arc::new(
+                move |update: crate::core::mcp_catalog::client::ProgressUpdate| {
+                    sender.send(update.progress, update.total, update.message);
+                },
+            ) as crate::core::mcp_catalog::client::ProgressCallback
         });
 
-        match crate::tools::ctx_tools::run_with_progress(args, &ctx.project_root, progress) {
+        let result = crate::tools::ctx_tools::run_with_progress(args, &ctx.project_root, progress);
+
+        // ProgressSender drains on the async server runtime while this handler
+        // runs in spawn_blocking. Flush before returning so the terminal
+        // tools/call response cannot overtake queued UI progress notifications.
+        if let Some(sender) = progress_sender {
+            if !sender.flush_blocking(std::time::Duration::from_secs(5)) {
+                tracing::debug!("[ctx_tools] progress flush timed out before terminal result");
+            }
+        }
+
+        match result {
             Ok(text) => Ok(ToolOutput::simple(text)),
             Err(e) => Err(ErrorData::invalid_params(e, None)),
         }
