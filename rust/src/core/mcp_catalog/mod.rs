@@ -67,6 +67,17 @@ pub async fn proxy(
     arguments: Map<String, Value>,
     project_root: &str,
 ) -> Result<String, String> {
+    proxy_with_progress(cfg, handle, arguments, project_root, None).await
+}
+
+/// Proxy a server::tool call and optionally forward downstream MCP progress.
+pub async fn proxy_with_progress(
+    cfg: &GatewayConfig,
+    handle: &str,
+    arguments: Map<String, Value>,
+    project_root: &str,
+    progress: Option<client::ProgressCallback>,
+) -> Result<String, String> {
     let (server_name, tool) = catalog::split_namespaced(handle)
         .ok_or_else(|| format!("invalid tool handle `{handle}` (expected `server::tool`)"))?;
     let server = cfg
@@ -75,7 +86,8 @@ pub async fn proxy(
         .ok_or_else(|| format!("unknown or disabled gateway server `{server_name}`"))?;
     let resolved = server.resolve()?;
     let timeout = std::time::Duration::from_secs(cfg.call_timeout_secs.max(1));
-    let call = client::proxy_call(&resolved, tool, arguments, timeout).await;
+    let call =
+        client::proxy_call_with_progress(&resolved, tool, arguments, timeout, progress).await;
     // Per-addon usage metering (P5): attribute every proxied call to its server +
     // tool. A transport failure or a downstream `is_error` counts as an error.
     // Side-channel only — never touches the returned text (output determinism).

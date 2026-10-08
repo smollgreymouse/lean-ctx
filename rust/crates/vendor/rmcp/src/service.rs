@@ -1221,6 +1221,7 @@ where
                         }
                         Err(notification) => notification,
                     };
+                    let is_progress = notification.progress_token().is_some();
                     if let Some(progress_token) = notification.progress_token() {
                         peer.notify_progress_timeout_watcher(progress_token).await;
                     }
@@ -1236,13 +1237,24 @@ where
                             meta,
                             extensions,
                         };
-                        let current_span = tracing::Span::current();
-                        spawn_service_task(async move {
-                            let result = service.handle_notification(notification, context).await;
-                            if let Err(error) = result {
-                                tracing::warn!(%error, "Error sending notification");
+                        if is_progress {
+                            // Progress is ordered on the wire and drives live UI. Process it
+                            // inline so concurrently scheduled notification tasks cannot reorder
+                            // updates from a single request (for example 3,1,2).
+                            if let Err(error) =
+                                service.handle_notification(notification, context).await
+                            {
+                                tracing::warn!(%error, "Error sending progress notification");
                             }
-                        }.instrument(current_span));
+                        } else {
+                            let current_span = tracing::Span::current();
+                            spawn_service_task(async move {
+                                let result = service.handle_notification(notification, context).await;
+                                if let Err(error) = result {
+                                    tracing::warn!(%error, "Error sending notification");
+                                }
+                            }.instrument(current_span));
+                        }
                     }
                 }
                 Event::PeerMessage(JsonRpcMessage::Response(JsonRpcResponse {
