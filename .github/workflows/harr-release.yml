@@ -56,7 +56,7 @@ jobs:
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: HARR_BUILD_ID="${GITHUB_REF_NAME}@$(git rev-parse --short=12 HEAD)" cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
@@ -79,7 +79,9 @@ jobs:
       - name: Build
         working-directory: rust
         shell: pwsh
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+        run: |
+          $env:HARR_BUILD_ID = "$env:GITHUB_REF_NAME@$(git rev-parse --short=12 HEAD)"
+          cargo build --release --locked --target x86_64-pc-windows-msvc
       - name: Package
         shell: pwsh
         run: Compress-Archive -Path "rust/target/x86_64-pc-windows-msvc/release/lean-ctx.exe" -DestinationPath "lean-ctx-x86_64-pc-windows-msvc.zip"
