@@ -576,6 +576,16 @@ impl ServerHandler for LeanCtxServer {
                 }
             };
 
+            // Read-only workspace diagnostics: explicitly opt-in until workspace
+            // identity is authenticated. Never advertise a mutation endpoint here.
+            let mut tools = tools;
+            if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1") {
+                tools.push(crate::tool_defs::tool_def(
+                    "ctx_workspace_get",
+                    "Read this MCP connection's effective Workspace roots and authority provenance (read-only)",
+                    serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+                ));
+            }
             Ok(ListToolsResult {
                 tools,
                 ..Default::default()
@@ -666,6 +676,54 @@ impl ServerHandler for LeanCtxServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         use std::panic::AssertUnwindSafe;
+
+        // Workspace introspection is bound to this server/peer, never a user-
+        // supplied session identifier. Do not expose global config or credentials.
+        if request.name.as_ref() == "ctx_workspace_get" {
+            if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() != Ok("1") {
+                return Err(ErrorData::invalid_params(
+                    "Strict workspace mode is not enabled",
+                    None,
+                ));
+            }
+            self.resolve_roots_once().await;
+            let session = self.session.read().await;
+            let primary = session.project_root.as_deref().and_then(|p| {
+                let path = std::path::PathBuf::from(p).canonicalize().ok()?;
+                (path.is_dir() && !crate::core::pathutil::is_broad_or_unsafe_root(&path))
+                    .then(|| path.to_string_lossy().into_owned())
+            });
+            let Some(primary) = primary else {
+                return Err(ErrorData::invalid_params(
+                    "Strict workspace authority unavailable",
+                    None,
+                ));
+            };
+            let roots: Vec<String> = session
+                .client_workspace_roots
+                .iter()
+                .filter_map(|p| {
+                    let path = std::path::PathBuf::from(p).canonicalize().ok()?;
+                    (path.is_dir()
+                        && !crate::core::pathutil::is_broad_or_unsafe_root(&path)
+                        && path.to_string_lossy() != primary)
+                        .then(|| path.to_string_lossy().into_owned())
+                })
+                .collect();
+            let value = serde_json::json!({
+                "schemaVersion": 1,
+                "primaryRoot": primary,
+                "additionalRoots": roots,
+                "rootSource": "mcp-roots-list",
+                "revision": 0,
+                "mutable": false,
+                "authenticatedWorkspace": false,
+                "legacyGlobalRootsInherited": false,
+            });
+            return Ok(CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text(value.to_string()),
+            ]));
+        }
 
         // In flight until this call returns — the idle policy never releases
         // or exits under a running call.

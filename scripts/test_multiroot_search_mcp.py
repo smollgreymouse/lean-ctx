@@ -49,6 +49,17 @@ try:
   p.stdin.write(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized','params':{}})+'\n');p.stdin.flush()
   tools=request({'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},18)
   names=[t.get('name') for t in tools.get('result',{}).get('tools',[])]
+  assert ('ctx_workspace_get' in names)==strict, ('workspace tool discovery',strict,names)
+  if strict:
+   result=request({'jsonrpc':'2.0','id':20,'method':'tools/call','params':{'name':'ctx_workspace_get','arguments':{}}},25)
+   parts=result.get('result',{}).get('content',[])
+   document=json.loads(next(x['text'] for x in parts if x.get('type')=='text'))
+   assert document['primaryRoot']=='/fixture/repo-a',document
+   assert document['additionalRoots']==(['/fixture/repo-b'] if mode=='roots' else []), document
+   assert document['authenticatedWorkspace'] is False,document
+   assert document['mutable'] is False,document
+   assert document['revision']==0,document
+   print('WORKSPACE_API',json.dumps(document),flush=True)
   print('TOOLS',names[:65],flush=True)
   for i,n in enumerate(['ctx_tree','ctx_search','ctx_read'],3):
    if n not in names:continue

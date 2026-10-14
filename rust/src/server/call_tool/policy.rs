@@ -132,7 +132,7 @@ impl LeanCtxServer {
     /// Roots is SEP-2577-deprecated in rmcp 2.0 but still fully functional; we
     /// keep it for client-driven project-root auto-detection until MCP removes it.
     #[expect(deprecated)]
-    pub(super) async fn resolve_roots_once(&self) {
+    pub(crate) async fn resolve_roots_once(&self) {
         use std::sync::atomic::Ordering;
         if !self.has_client_roots.load(Ordering::Relaxed) {
             return;
