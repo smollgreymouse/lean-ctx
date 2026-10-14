@@ -37,6 +37,9 @@ mod refresh_tests;
 tokio::task_local! {
     /// Per-request project authority; never mutate process CWD for MCP roots.
     pub(crate) static REQUEST_PROJECT: std::cell::RefCell<Option<PathBuf>>;
+    /// Search roots admitted by the current MCP session. Scoped to one tool call,
+    /// never a process-wide allowlist. Unlike allow_paths, these roots may be indexed.
+    pub(crate) static REQUEST_SEARCH_ROOTS: std::cell::RefCell<Vec<PathBuf>>;
     /// Immutable policy view for one synchronous source-admission operation.
     pub(crate) static SOURCE_VIEW: std::cell::RefCell<Option<SourceView>>;
 }
@@ -147,6 +150,14 @@ pub(crate) fn pinned_role() -> Option<crate::core::roles::Role> {
             view.role
         }
     })
+}
+
+/// Bind already-validated, session-scoped additional search roots after MCP roots resolution.
+/// Call only inside REQUEST_SEARCH_ROOTS scope; this does not alter PathJail.
+pub(crate) fn bind_request_search_roots(roots: &[String]) {
+    let _ = REQUEST_SEARCH_ROOTS.try_with(|slot| {
+        *slot.borrow_mut() = roots.iter().map(PathBuf::from).collect();
+    });
 }
 
 pub(crate) fn bind_request_project(project: Option<&str>) {
