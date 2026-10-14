@@ -580,6 +580,15 @@ impl ServerHandler for LeanCtxServer {
             // identity is authenticated. Never advertise a mutation endpoint here.
             let mut tools = tools;
             if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1") {
+                for (name, description) in [
+                    ("ctx_workspace_list", "List workspaces visible to this MCP connection (read-only)"),
+                    ("ctx_workspace_diagnose", "Diagnose workspace authority for this MCP connection (read-only)"),
+                ] {
+                    tools.push(crate::tool_defs::tool_def(
+                        name, description,
+                        serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+                    ));
+                }
                 tools.push(crate::tool_defs::tool_def(
                     "ctx_workspace_get",
                     "Read this MCP connection's effective Workspace roots and authority provenance (read-only)",
@@ -679,7 +688,10 @@ impl ServerHandler for LeanCtxServer {
 
         // Workspace introspection is bound to this server/peer, never a user-
         // supplied session identifier. Do not expose global config or credentials.
-        if request.name.as_ref() == "ctx_workspace_get" {
+        if matches!(
+            request.name.as_ref(),
+            "ctx_workspace_get" | "ctx_workspace_list" | "ctx_workspace_diagnose"
+        ) {
             if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() != Ok("1") {
                 return Err(ErrorData::invalid_params(
                     "Strict workspace mode is not enabled",
@@ -710,18 +722,35 @@ impl ServerHandler for LeanCtxServer {
                         .then(|| path.to_string_lossy().into_owned())
                 })
                 .collect();
+            drop(session);
+            let mut registry = self.workspace_registry.write().await;
+            registry.update(primary.clone(), roots.clone());
+            let identity = registry.id.clone();
+            let revision = registry.revision;
+            drop(registry);
             let value = serde_json::json!({
+                "workspaceId": identity,
                 "schemaVersion": 1,
                 "primaryRoot": primary,
                 "additionalRoots": roots,
                 "rootSource": "mcp-roots-list",
-                "revision": 0,
+                "revision": revision,
                 "mutable": false,
                 "authenticatedWorkspace": false,
                 "legacyGlobalRootsInherited": false,
             });
+            let response = match request.name.as_ref() {
+                "ctx_workspace_list" => serde_json::json!({"schemaVersion":1,"workspaces":[value]}),
+                "ctx_workspace_diagnose" => serde_json::json!({
+                    "schemaVersion":1,
+                    "workspace":value,
+                    "issues":["workspace_identity_not_authenticated", "mutation_api_unavailable"],
+                    "status":"read_only_untrusted_roots",
+                }),
+                _ => value,
+            };
             return Ok(CallToolResult::success(vec![
-                rmcp::model::ContentBlock::text(value.to_string()),
+                rmcp::model::ContentBlock::text(response.to_string()),
             ]));
         }
 

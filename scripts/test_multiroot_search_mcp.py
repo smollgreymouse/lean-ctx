@@ -50,6 +50,8 @@ try:
   tools=request({'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},18)
   names=[t.get('name') for t in tools.get('result',{}).get('tools',[])]
   assert ('ctx_workspace_get' in names)==strict, ('workspace tool discovery',strict,names)
+  assert ('ctx_workspace_list' in names)==strict
+  assert ('ctx_workspace_diagnose' in names)==strict
   if strict:
    result=request({'jsonrpc':'2.0','id':20,'method':'tools/call','params':{'name':'ctx_workspace_get','arguments':{}}},25)
    parts=result.get('result',{}).get('content',[])
@@ -58,7 +60,17 @@ try:
    assert document['additionalRoots']==(['/fixture/repo-b'] if mode=='roots' else []), document
    assert document['authenticatedWorkspace'] is False,document
    assert document['mutable'] is False,document
-   assert document['revision']==0,document
+   assert document['revision']==1,document
+   assert isinstance(document['workspaceId'],str) and len(document['workspaceId'])>10
+   for index, tool in enumerate(('ctx_workspace_get','ctx_workspace_list','ctx_workspace_diagnose'),21):
+    answer=request({'jsonrpc':'2.0','id':index,'method':'tools/call','params':{'name':tool,'arguments':{}}},25)
+    obj=json.loads(next(x['text'] for x in answer['result']['content'] if x.get('type')=='text'))
+    candidate= obj if tool=='ctx_workspace_get' else (obj['workspaces'][0] if tool=='ctx_workspace_list' else obj['workspace'])
+    assert candidate['workspaceId']==document['workspaceId']
+    assert candidate['revision']==document['revision']
+    if tool=='ctx_workspace_list': assert len(obj['workspaces'])==1
+    if tool=='ctx_workspace_diagnose': assert obj['status']=='read_only_untrusted_roots'
+
    print('WORKSPACE_API',json.dumps(document),flush=True)
   print('TOOLS',names[:65],flush=True)
   for i,n in enumerate(['ctx_tree','ctx_search','ctx_read'],3):

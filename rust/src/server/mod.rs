@@ -443,3 +443,5 @@ mod tests {
         );
     }
 }
+
+pub(crate) mod workspace_registry;

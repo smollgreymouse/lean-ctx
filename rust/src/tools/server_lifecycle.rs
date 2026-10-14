@@ -243,6 +243,7 @@ impl LeanCtxServer {
         Self {
             cache,
             session,
+            workspace_registry: crate::server::workspace_registry::new_registry(),
             tool_calls: Arc::new(RwLock::new(Vec::new())),
             call_count: Arc::new(AtomicUsize::new(0)),
             background_tick: Arc::new(AtomicUsize::new(0)),
