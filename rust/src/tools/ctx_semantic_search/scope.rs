@@ -51,7 +51,10 @@ pub(crate) fn resolve_search_root(path: &str) -> Result<(PathBuf, Option<String>
                     && admitted.is_dir()
                     && requested.starts_with(&admitted)
                 {
-                    return Ok((admitted.clone(), search_subdir_filter(&admitted, &requested)));
+                    return Ok((
+                        admitted.clone(),
+                        search_subdir_filter(&admitted, &requested),
+                    ));
                 }
             }
         }

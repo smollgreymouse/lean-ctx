@@ -143,7 +143,6 @@ mod root_resolution_tests {
         assert_eq!(from_a.unwrap(), (a, None), "paths inside the pin keep it");
     }
 
-
     #[test]
     fn request_authority_accepts_only_session_search_roots() {
         let tmp = tempfile::tempdir().unwrap();
@@ -190,10 +189,12 @@ mod root_resolution_tests {
             || {
                 crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
                     std::cell::RefCell::new(Some(a)),
-                    || assert_eq!(
-                        resolve_search_root(&b.to_string_lossy()).unwrap_err(),
-                        "source path is outside the request authority"
-                    ),
+                    || {
+                        assert_eq!(
+                            resolve_search_root(&b.to_string_lossy()).unwrap_err(),
+                            "source path is outside the request authority"
+                        )
+                    },
                 )
             },
         );

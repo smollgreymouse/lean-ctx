@@ -544,6 +544,9 @@ impl LeanCtxServer {
             .or_else(|| {
                 (!ctx.project_root.is_empty()).then(|| std::path::PathBuf::from(&ctx.project_root))
             });
+        let policy_search_roots = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+            .try_with(|slot| slot.borrow().clone())
+            .unwrap_or_default();
         let join = tokio::task::spawn_blocking(move || {
             let handle = || {
                 crate::core::archive::authority::CAPTURE.sync_scope(archive_capture, || {
@@ -551,7 +554,10 @@ impl LeanCtxServer {
                         crate::server::native_receipts::NATIVE_RECEIPT_CAPTURE.sync_scope(
                             receipt_capture,
                             || {
-                                crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
+                                crate::core::policy::runtime::REQUEST_SEARCH_ROOTS.sync_scope(
+                                    std::cell::RefCell::new(policy_search_roots),
+                                    || {
+                                        crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
                                     std::cell::RefCell::new(policy_project),
                                     || {
                                         crate::core::context_kernel::bridge::runtime::KERNEL_PLANNING_HANDOFF
@@ -561,6 +567,8 @@ impl LeanCtxServer {
                                                         tool.handle(&args_owned, &ctx)
                                                     })
                                             })
+                                    },
+                                )
                                     },
                                 )
                             },
