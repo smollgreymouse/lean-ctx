@@ -237,6 +237,33 @@ impl LeanCtxServer {
                         // Do not elevate allow_paths to search authority.
                         let search_roots = self.session.read().await.extra_roots.clone();
                         crate::core::policy::runtime::bind_request_search_roots(&search_roots);
+                        // Strict isolation is opt-in until the Workspace API binds
+                        // authenticated workspace identities. Legacy launchers keep
+                        // their existing allow_paths semantics unchanged.
+                        let snapshot = if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref()
+                            == Ok("1")
+                        {
+                            let state = self.session.read().await;
+                            state.project_root.as_ref().and_then(|root| {
+                                let primary_root =
+                                    std::path::PathBuf::from(root).canonicalize().ok()?;
+                                let additional_roots = state
+                                    .extra_roots
+                                    .iter()
+                                    .filter_map(|p| {
+                                        let p = std::path::PathBuf::from(p).canonicalize().ok()?;
+                                        p.is_dir().then_some(p)
+                                    })
+                                    .collect();
+                                Some(crate::core::policy::runtime::WorkspaceSnapshot {
+                                    primary_root,
+                                    additional_roots,
+                                    revision: 0,
+                                })
+                            })
+                        } else {
+                            None
+                        };
                         // One Decision Receipt per call: every admission inside this
                         // call (handler and its read workers) lands in this capture.
                         let admissions =
@@ -245,7 +272,8 @@ impl LeanCtxServer {
                         let result = crate::core::context_admission::capture::ADMISSIONS
                             .scope(
                                 Some(admissions.clone()),
-                                self.call_tool_guarded_scoped(request),
+                                crate::core::policy::runtime::REQUEST_WORKSPACE
+                                    .scope(snapshot, self.call_tool_guarded_scoped(request)),
                             )
                             .await;
                         self.finish_gateway_receipt(admissions, &result, &tool_name)

@@ -40,8 +40,31 @@ tokio::task_local! {
     /// Search roots admitted by the current MCP session. Scoped to one tool call,
     /// never a process-wide allowlist. Unlike allow_paths, these roots may be indexed.
     pub(crate) static REQUEST_SEARCH_ROOTS: std::cell::RefCell<Vec<PathBuf>>;
+    /// Strict workspace authority: `None` preserves legacy single-project behavior.
+    /// `Some` forbids process-wide extra/allow roots for this request.
+    pub(crate) static REQUEST_WORKSPACE: Option<WorkspaceSnapshot>;
+
     /// Immutable policy view for one synchronous source-admission operation.
     pub(crate) static SOURCE_VIEW: std::cell::RefCell<Option<SourceView>>;
+}
+
+/// Canonical, immutable authority captured at the MCP request boundary.
+/// A snapshot must be built from authenticated session state, not tool arguments.
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspaceSnapshot {
+    pub(crate) primary_root: PathBuf,
+    pub(crate) additional_roots: Vec<PathBuf>,
+    pub(crate) revision: u64,
+}
+
+impl WorkspaceSnapshot {
+    pub(crate) fn allows(&self, path: &Path) -> bool {
+        path.starts_with(&self.primary_root)
+            || self
+                .additional_roots
+                .iter()
+                .any(|root| path.starts_with(root))
+    }
 }
 
 #[derive(Clone)]

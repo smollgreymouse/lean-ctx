@@ -544,6 +544,10 @@ impl LeanCtxServer {
             .or_else(|| {
                 (!ctx.project_root.is_empty()).then(|| std::path::PathBuf::from(&ctx.project_root))
             });
+        let policy_workspace = crate::core::policy::runtime::REQUEST_WORKSPACE
+            .try_with(|value| value.clone())
+            .ok()
+            .flatten();
         let policy_search_roots = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
             .try_with(|slot| slot.borrow().clone())
             .unwrap_or_default();
@@ -554,7 +558,10 @@ impl LeanCtxServer {
                         crate::server::native_receipts::NATIVE_RECEIPT_CAPTURE.sync_scope(
                             receipt_capture,
                             || {
-                                crate::core::policy::runtime::REQUEST_SEARCH_ROOTS.sync_scope(
+                                crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(
+                    policy_workspace,
+                    || {
+                crate::core::policy::runtime::REQUEST_SEARCH_ROOTS.sync_scope(
                                     std::cell::RefCell::new(policy_search_roots),
                                     || {
                                         crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
@@ -571,6 +578,8 @@ impl LeanCtxServer {
                                 )
                                     },
                                 )
+                    },
+                )
                             },
                         )
                     })

@@ -2,7 +2,7 @@
 """Standalone real-MCP PathJail/search authority regression, Linux bubblewrap only.
 
 Run with LEANCTX_TEST_BIN=/absolute/path/to/real/lean-ctx and one of
-`default`, `allow`, `extra`. No production config or projects are mounted.
+`default`, `allow`, `extra`, `strict-default`, `strict-allow`, `strict-extra`. No production config or projects are mounted.
 """
 import json, os, pathlib, subprocess, tempfile, select, time, sys
 b=pathlib.Path(tempfile.mkdtemp(prefix='harr-leanctx-baseline-'))
@@ -15,9 +15,14 @@ if not real or not pathlib.Path(real).is_file():
  raise SystemExit('Set LEANCTX_TEST_BIN to the absolute path of an existing LeanCTX binary; NEVER point to a wrapper')
 cmd=['bwrap','--die-with-parent','--unshare-net','--ro-bind','/usr','/usr','--ro-bind','/lib','/lib','--ro-bind','/lib64','/lib64','--proc','/proc','--dev','/dev','--dir','/bin','--ro-bind',real,'/bin/leanctx','--bind',str(b),'/fixture','--tmpfs','/tmp','--chdir','/fixture/repo-a','--setenv','HOME','/fixture/home','--setenv','LEAN_CTX_DATA_DIR','/fixture/data','--setenv','XDG_CONFIG_HOME','/fixture/xdg-config','--setenv','XDG_CACHE_HOME','/fixture/xdg-cache','--setenv','XDG_DATA_HOME','/fixture/xdg-data','--setenv','TMPDIR','/fixture/tmp']
 mode=sys.argv[1] if len(sys.argv)>1 else 'default'
+strict = mode.startswith('strict-')
+if strict:
+ mode = mode[len('strict-'):]
 assert mode in ('default','allow','extra')
 if mode=='extra':cmd+=['--setenv','LEAN_CTX_EXTRA_ROOTS','/fixture/repo-b']
 if mode=='allow':cmd+=['--setenv','LEAN_CTX_ALLOW_PATH','/fixture/repo-b']
+if strict:
+ cmd += ['--setenv','LEAN_CTX_STRICT_WORKSPACE','1']
 cmd+=['--','/bin/leanctx','mcp']
 print('MODE',mode,'FIXTURE',b,flush=True)
 p=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
@@ -53,7 +58,7 @@ try:
     else:
      assert 'outside' in content or 'escapes project root' in content, content
    if n=='ctx_read':
-    assert ('cobalt lantern walnut b' in content)==(mode!='default'),content
+    assert ('cobalt lantern walnut b' in content)==(mode=='extra' if strict else mode!='default'),content
 
   for i, target in enumerate(['/fixture/repo-outside', '/fixture/repo-a/escape'], 10):
    v=request({'jsonrpc':'2.0','id':i,'method':'tools/call','params':{'name':'ctx_search','arguments':{'query':'cobalt lantern','path':target}}},25)
