@@ -224,13 +224,19 @@ impl LeanCtxServer {
             .project_root
             .as_ref()
             .map(std::path::PathBuf::from);
-        crate::core::policy::runtime::REQUEST_PROJECT
-            .scope(std::cell::RefCell::new(project), async {
+        crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+            .scope(std::cell::RefCell::new(Vec::new()), async {
+                crate::core::policy::runtime::REQUEST_PROJECT
+                    .scope(std::cell::RefCell::new(project), async {
                 // Establish client-root authority before early receipt/identity
                 // checks can return, as well as before lifecycle replay lookup.
                 self.resolve_roots_once().await;
                 let project = self.session.read().await.project_root.clone();
                 crate::core::policy::runtime::bind_request_project(project.as_deref());
+                // The extra roots are resolved for THIS session, not process-wide.
+                // Do not elevate allow_paths to search authority.
+                let search_roots = self.session.read().await.extra_roots.clone();
+                crate::core::policy::runtime::bind_request_search_roots(&search_roots);
                 // One Decision Receipt per call: every admission inside this
                 // call (handler and its read workers) lands in this capture.
                 let admissions = crate::core::context_admission::capture::AdmissionCapture::new();
@@ -253,6 +259,8 @@ impl LeanCtxServer {
                         error
                     }
                 })
+                    })
+                    .await
             })
             .await
     }
