@@ -240,19 +240,29 @@ impl LeanCtxServer {
                         // Strict isolation is opt-in until the Workspace API binds
                         // authenticated workspace identities. Legacy launchers keep
                         // their existing allow_paths semantics unchanged.
-                        let snapshot = if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref()
-                            == Ok("1")
-                        {
+                        let strict =
+                            std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
+                        let snapshot = if strict {
                             let state = self.session.read().await;
                             state.project_root.as_ref().and_then(|root| {
                                 let primary_root =
                                     std::path::PathBuf::from(root).canonicalize().ok()?;
+                                if !primary_root.is_dir()
+                                    || crate::core::pathutil::is_broad_or_unsafe_root(&primary_root)
+                                {
+                                    return None;
+                                }
+                                // Never promote the process-global config/env extra_roots
+                                // or persisted session extras into strict authority.
                                 let additional_roots = state
-                                    .extra_roots
+                                    .client_workspace_roots
                                     .iter()
                                     .filter_map(|p| {
                                         let p = std::path::PathBuf::from(p).canonicalize().ok()?;
-                                        p.is_dir().then_some(p)
+                                        (p.is_dir()
+                                            && !crate::core::pathutil::is_broad_or_unsafe_root(&p)
+                                            && p != primary_root)
+                                            .then_some(p)
                                     })
                                     .collect();
                                 Some(crate::core::policy::runtime::WorkspaceSnapshot {
@@ -264,6 +274,20 @@ impl LeanCtxServer {
                         } else {
                             None
                         };
+                        if strict && snapshot.is_none() {
+                            return Err(ErrorData::internal_error(
+                                "Strict workspace authority unavailable",
+                                None,
+                            ));
+                        }
+                        if let Some(ref snapshot) = snapshot {
+                            let strict_roots: Vec<String> = snapshot
+                                .additional_roots
+                                .iter()
+                                .map(|path| path.to_string_lossy().into_owned())
+                                .collect();
+                            crate::core::policy::runtime::bind_request_search_roots(&strict_roots);
+                        }
                         // One Decision Receipt per call: every admission inside this
                         // call (handler and its read workers) lands in this capture.
                         let admissions =

@@ -54,6 +54,11 @@ pub struct SessionState {
     /// Populated from config `extra_roots` and/or MCP `roots/list`.
     #[serde(default)]
     pub extra_roots: Vec<String>,
+    /// Client-scoped MCP roots/list discovery, never persisted or inherited
+    /// from process-wide LEAN_CTX_EXTRA_ROOTS/config. Not an auth token.
+    #[serde(skip)]
+    pub(crate) client_workspace_roots: Vec<String>,
+
     /// Explicit live-zone freeze state. This is intentionally process-local:
     /// provider cache prefixes must be re-established after a restart.
     #[serde(skip)]

@@ -2,7 +2,7 @@
 """Standalone real-MCP PathJail/search authority regression, Linux bubblewrap only.
 
 Run with LEANCTX_TEST_BIN=/absolute/path/to/real/lean-ctx and one of
-`default`, `allow`, `extra`, `strict-default`, `strict-allow`, `strict-extra`. No production config or projects are mounted.
+`default`, `allow`, `extra`, `strict-default`, `strict-allow`, `strict-extra`, `strict-roots`. No production config or projects are mounted.
 """
 import json, os, pathlib, subprocess, tempfile, select, time, sys
 b=pathlib.Path(tempfile.mkdtemp(prefix='harr-leanctx-baseline-'))
@@ -18,7 +18,7 @@ mode=sys.argv[1] if len(sys.argv)>1 else 'default'
 strict = mode.startswith('strict-')
 if strict:
  mode = mode[len('strict-'):]
-assert mode in ('default','allow','extra')
+assert mode in ('default','allow','extra','roots')
 if mode=='extra':cmd+=['--setenv','LEAN_CTX_EXTRA_ROOTS','/fixture/repo-b']
 if mode=='allow':cmd+=['--setenv','LEAN_CTX_ALLOW_PATH','/fixture/repo-b']
 if strict:
@@ -35,11 +35,15 @@ def request(obj,limit=18):
   if not line:break
   try:
    msg=json.loads(line)
+   if msg.get('method')=='roots/list' and 'id' in msg:
+    roots = [{'uri':'file:///fixture/repo-a','name':'first'}, {'uri':'file:///fixture/repo-b','name':'second'}]
+    p.stdin.write(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'roots':roots}})+'\n');p.stdin.flush()
+    continue
    if msg.get('id')==obj['id']: return msg
   except Exception: pass
  return {'error':'timeout or closed','returncode':p.poll()}
 try:
- init=request({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'isolated-baseline','version':'1'}}},30)
+ init=request({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':({'roots':{'listChanged':True}} if mode=='roots' else {}),'clientInfo':{'name':'isolated-baseline','version':'1'}}},30)
  print('INIT',str(init)[:1000],flush=True)
  if 'result' in init:
   p.stdin.write(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized','params':{}})+'\n');p.stdin.flush()
@@ -53,12 +57,12 @@ try:
    print('CALL',n,json.dumps(v,ensure_ascii=False)[:2200],flush=True)
    content=' '.join(part.get('text','') for part in v.get('result',{}).get('content',[]))
    if n=='ctx_search':
-    if mode=='extra':
+    if mode=='roots' or (mode=='extra' and not strict):
      assert '1 results from 1 indexed chunks' in content and 'cobalt lantern walnut b' in content, content
     else:
      assert 'outside' in content or 'escapes project root' in content, content
    if n=='ctx_read':
-    assert ('cobalt lantern walnut b' in content)==(mode=='extra' if strict else mode!='default'),content
+    assert ('cobalt lantern walnut b' in content)==(mode=='roots' if strict else mode!='default'),content
 
   for i, target in enumerate(['/fixture/repo-outside', '/fixture/repo-a/escape'], 10):
    v=request({'jsonrpc':'2.0','id':i,'method':'tools/call','params':{'name':'ctx_search','arguments':{'query':'cobalt lantern','path':target}}},25)
