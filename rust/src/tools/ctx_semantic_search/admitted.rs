@@ -37,7 +37,18 @@ pub(super) fn fresh_index(
         .ok_or("source authority unavailable")?
         .canonicalize()
         .map_err(|_| "source authority unavailable")?;
-    if !root.starts_with(&authority) {
+    // The primary request project is always authorized. Additional search roots
+    // are admitted only from the session-scoped MCP authority, never allow_paths.
+    let additional_authorized = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+        .try_with(|slot| {
+            slot.borrow().iter().any(|candidate| {
+                candidate
+                    .canonicalize()
+                    .is_ok_and(|allowed| allowed.is_dir() && root.starts_with(&allowed))
+            })
+        })
+        .unwrap_or(false);
+    if !root.starts_with(&authority) && !additional_authorized {
         return Err("source root is outside the request authority".into());
     }
     // lean-ctx: bounded synchronous fresh view; replace with a digest- and
