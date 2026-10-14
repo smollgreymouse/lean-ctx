@@ -144,13 +144,28 @@ impl ServerHandler for LeanCtxServer {
                     session.project_root = None;
                 }
             }
-            let cfg_extra = crate::core::config::Config::load().extra_roots;
-            if !cfg_extra.is_empty() {
-                let existing: std::collections::HashSet<_> =
-                    session.extra_roots.iter().cloned().collect();
-                for r in cfg_extra {
-                    if !existing.contains(&r) {
-                        session.extra_roots.push(r);
+            // PathJail accepts LEAN_CTX_EXTRA_ROOTS directly. Mirror only that
+            // explicit multi-root authority into the session so search and
+            // PathJail agree; LEAN_CTX_ALLOW_PATH must NOT grant search scope.
+            let mut cfg_extra = crate::core::config::Config::load().extra_roots;
+            if let Some(extra) = std::env::var_os("LEAN_CTX_EXTRA_ROOTS") {
+                cfg_extra.extend(
+                    std::env::split_paths(&extra).map(|path| path.to_string_lossy().into_owned()),
+                );
+            }
+            for path in cfg_extra {
+                if path.trim().is_empty() {
+                    continue;
+                }
+                let candidate = std::path::Path::new(&path);
+                if let Ok(canonical) = candidate.canonicalize() {
+                    if canonical.is_dir() {
+                        let canonical = canonical.to_string_lossy().into_owned();
+                        if session.project_root.as_deref() != Some(canonical.as_str())
+                            && !session.extra_roots.contains(&canonical)
+                        {
+                            session.extra_roots.push(canonical);
+                        }
                     }
                 }
             }
