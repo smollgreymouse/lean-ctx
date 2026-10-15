@@ -808,6 +808,64 @@ mod tests {
 
     #[cfg(not(feature = "no-jail"))]
     #[test]
+    fn concurrent_workspace_snapshots_are_thread_isolated() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let temp = tempfile::tempdir().expect("fixture");
+        let a = temp.path().join("repo-a");
+        let b = temp.path().join("repo-b");
+        let c = temp.path().join("repo-c");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("marker.txt"), b"marker").unwrap();
+        }
+        let primary_a = a.canonicalize().unwrap();
+        let root_b = b.canonicalize().unwrap();
+        let primary_c = c.canonicalize().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            let b1 = barrier.clone();
+            let a1 = primary_a.clone();
+            let b_root1 = root_b.clone();
+            let c1 = primary_c.clone();
+            let first = scope.spawn(move || {
+                let snapshot = crate::core::policy::runtime::WorkspaceSnapshot {
+                    primary_root: a1.clone(),
+                    additional_roots: vec![b_root1.clone()],
+                    revision: 7,
+                };
+                crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
+                    b1.wait();
+                    assert!(jail_path_with_roots(&b_root1.join("marker.txt"), &a1, &[]).is_ok());
+                    assert!(jail_path_with_roots(&c1.join("marker.txt"), &a1, &[]).is_err());
+                });
+            });
+            let b2 = barrier;
+            let c2 = primary_c.clone();
+            let b_root2 = root_b.clone();
+            let second = scope.spawn(move || {
+                let snapshot = crate::core::policy::runtime::WorkspaceSnapshot {
+                    primary_root: c2.clone(),
+                    additional_roots: vec![],
+                    revision: 3,
+                };
+                crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
+                    b2.wait();
+                    assert!(jail_path_with_roots(&c2.join("marker.txt"), &c2, &[]).is_ok());
+                    assert!(jail_path_with_roots(&b_root2.join("marker.txt"), &c2, &[]).is_err());
+                });
+            });
+            first.join().unwrap();
+            second.join().unwrap();
+        });
+        assert!(
+            crate::core::policy::runtime::REQUEST_WORKSPACE
+                .try_with(|_| ())
+                .is_err()
+        );
+    }
+
+    #[cfg(not(feature = "no-jail"))]
+    #[test]
     fn strict_workspace_snapshots_isolate_clients_and_reject_cross_root_reads() {
         let _iso = crate::core::data_dir::isolated_data_dir();
         let tmp = tempfile::tempdir().unwrap();

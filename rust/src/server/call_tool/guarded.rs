@@ -242,7 +242,31 @@ impl LeanCtxServer {
                         // their existing allow_paths semantics unchanged.
                         let strict =
                             std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
-                        let snapshot = if strict {
+                        let snapshot = if strict && self.workspace_store_path.is_some() {
+                            let state = self.session.read().await;
+                            let store = self
+                                .workspace_store_path
+                                .as_deref()
+                                .and_then(|path| crate::server::workspace_store::load(path).ok());
+                            store.and_then(|store| {
+                                let primary =
+                                    std::path::PathBuf::from(state.project_root.as_ref()?)
+                                        .canonicalize()
+                                        .ok()?;
+                                if primary.to_string_lossy() != store.primary {
+                                    return None;
+                                }
+                                Some(crate::core::policy::runtime::WorkspaceSnapshot {
+                                    primary_root: primary,
+                                    additional_roots: store
+                                        .additional
+                                        .into_iter()
+                                        .map(std::path::PathBuf::from)
+                                        .collect(),
+                                    revision: store.revision,
+                                })
+                            })
+                        } else if strict {
                             let state = self.session.read().await;
                             state.project_root.as_ref().and_then(|root| {
                                 let primary_root =
@@ -293,6 +317,7 @@ impl LeanCtxServer {
                         let admissions =
                             crate::core::context_admission::capture::AdmissionCapture::new();
                         let tool_name = request.name.to_string();
+                        let expected_revision = snapshot.as_ref().map(|s| s.revision);
                         let result = crate::core::context_admission::capture::ADMISSIONS
                             .scope(
                                 Some(admissions.clone()),
@@ -300,6 +325,23 @@ impl LeanCtxServer {
                                     .scope(snapshot, self.call_tool_guarded_scoped(request)),
                             )
                             .await;
+                        // Revocation publication fence: never deliver a result
+                        // produced with an old workspace revision. Also fail closed
+                        // if the backing store disappears or becomes invalid.
+                        if self.workspace_store_path.is_some() {
+                            let current = crate::server::workspace_store::load(
+                                self.workspace_store_path.as_deref().expect("checked"),
+                            )
+                            .map_err(|_| {
+                                ErrorData::internal_error("Workspace authority revoked", None)
+                            })?;
+                            if expected_revision != Some(current.revision) {
+                                return Err(ErrorData::internal_error(
+                                    "Workspace changed during request",
+                                    None,
+                                ));
+                            }
+                        }
                         self.finish_gateway_receipt(admissions, &result, &tool_name)
                             .await;
                         result.map_err(|error| {
@@ -727,9 +769,14 @@ impl LeanCtxServer {
             .unwrap_or_default();
         // A cached answer is egress too: never served while a policy pack or
         // the sensitivity floor could withhold what it contains.
-        let cache_key = cache_allowed_for_current_egress(&config)
-            .then(|| response_cache_key(name, args, &project_root))
-            .flatten();
+        // A process-global cache keyed only by primary root and arguments is
+        // unsafe for different workspaces with different attached roots.
+        // Fail closed until cache keys include verified workspace identity
+        // AND revision and stale responses are fenced on revocation.
+        let cache_key = (std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() != Ok("1")
+            && cache_allowed_for_current_egress(&config))
+        .then(|| response_cache_key(name, args, &project_root))
+        .flatten();
         let call_start = std::time::Instant::now();
         if let Some(cached) = cache_key
             .as_ref()

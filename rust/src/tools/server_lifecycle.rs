@@ -244,6 +244,9 @@ impl LeanCtxServer {
             cache,
             session,
             workspace_registry: crate::server::workspace_registry::new_registry(),
+            workspace_store_path: std::env::var_os("LEAN_CTX_WORKSPACE_FILE")
+                .map(std::path::PathBuf::from),
+            workspace_mutation_token: std::env::var("LEAN_CTX_WORKSPACE_MUTATION_TOKEN").ok(),
             tool_calls: Arc::new(RwLock::new(Vec::new())),
             call_count: Arc::new(AtomicUsize::new(0)),
             background_tick: Arc::new(AtomicUsize::new(0)),
