@@ -325,6 +325,16 @@ impl LeanCtxServer {
                                     .scope(snapshot, self.call_tool_guarded_scoped(request)),
                             )
                             .await;
+                        // Debug-only deterministic race gate for the isolated MCP
+                        // revocation integration test. Never compiled in release.
+                        #[cfg(debug_assertions)]
+                        if tool_name == "ctx_search"
+                            && self.workspace_store_path.is_some()
+                            && let Ok(marker) = std::env::var("LEAN_CTX_TEST_REVOCATION_MARKER")
+                        {
+                            let _ = std::fs::write(marker, b"ready");
+                            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                        }
                         // Revocation publication fence: never deliver a result
                         // produced with an old workspace revision. Also fail closed
                         // if the backing store disappears or becomes invalid.

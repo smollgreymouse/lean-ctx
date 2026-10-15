@@ -179,3 +179,5 @@ pub(crate) use value_cmd::cmd_value;
 pub(crate) use value_report::cmd_value_report;
 pub(crate) use verify_cmd::cmd_verify;
 pub(crate) use visualize_cmd::cmd_visualize;
+
+pub(crate) mod workspace_admin;

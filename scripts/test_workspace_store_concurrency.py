@@ -40,9 +40,10 @@ class Client:
                    '--chdir','/fixture/repo-'+root,
                    '--setenv','HOME','/fixture/home-'+tag,
                    '--setenv','LEAN_CTX_DATA_DIR','/fixture/data-'+tag,
+                   '--setenv','LEAN_CTX_TEST_REVOCATION_MARKER','/fixture/revocation-'+tag,
                    '--setenv','LEAN_CTX_STRICT_WORKSPACE','1',
                    '--setenv','LEAN_CTX_WORKSPACE_FILE','/fixture/'+store,
-                   '--setenv','LEAN_CTX_WORKSPACE_MUTATION_TOKEN','test-secret',
+
                    '--','/bin/leanctx','mcp']
         self.p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1)
@@ -90,20 +91,39 @@ try:
     assert isolated['workspaceId']!=first['workspaceId']
     denied_other = c.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
     assert 'outside' in denied_other or 'escapes project root' in denied_other, denied_other
-    token = 'test-secret'
-    added = a.tool('ctx_workspace_add_root',{'root':'/fixture/repo-b','expectedRevision':1,'authorization':token})
+    def admin(action, store, root, revision):
+        command=['bwrap','--die-with-parent','--unshare-net',
+                 '--ro-bind','/usr','/usr','--ro-bind','/lib','/lib','--ro-bind','/lib64','/lib64',
+                 '--proc','/proc','--dev','/dev','--dir','/bin','--ro-bind',binary,'/bin/leanctx',
+                 '--bind',str(base),'/fixture','--tmpfs','/tmp','--setenv','HOME','/fixture/home-a',
+                 '--','/bin/leanctx','workspace-admin',action,'/fixture/'+store,root,str(revision)]
+        result=subprocess.run(command,capture_output=True,text=True,timeout=40)
+        return json.loads(result.stdout) if result.returncode==0 else {'error':result.stderr}
+
+    added = admin('add','workspace.json','/fixture/repo-b',1)
     assert added['revision']==2
     observed = b.tool('ctx_workspace_get')
     assert observed['revision']==2 and '/fixture/repo-b' in observed['additionalRoots']
     assert 'visible b' in b.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        f1=pool.submit(a.tool,'ctx_workspace_add_root',{'root':'/fixture/repo-c','expectedRevision':2,'authorization':token})
-        f2=pool.submit(b.tool,'ctx_workspace_add_root',{'root':'/fixture/repo-d','expectedRevision':2,'authorization':token})
+        f1=pool.submit(admin,'add','workspace.json','/fixture/repo-c',2)
+        f2=pool.submit(admin,'add','workspace.json','/fixture/repo-d',2)
         outcomes=[f1.result(),f2.result()]
     assert sum(isinstance(outcome,dict) and outcome.get('revision')==3 for outcome in outcomes)==1,outcomes
     assert sum(isinstance(outcome,dict) and 'error' in outcome for outcome in outcomes)==1,outcomes
-    removed=a.tool('ctx_workspace_remove_root',{'root':'/fixture/repo-b','expectedRevision':3,'authorization':token})
-    assert removed['revision']==4 and '/fixture/repo-b' not in removed['additionalRoots']
+    marker=base/'revocation-b'
+    marker.unlink(missing_ok=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        flight=pool.submit(b.tool,'ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
+        deadline=time.monotonic()+25
+        while not marker.exists() and time.monotonic()<deadline:
+            time.sleep(0.01)
+        assert marker.exists(),'Search never reached publication fence'
+        removed=admin('remove','workspace.json','/fixture/repo-b',3)
+        raced=flight.result(timeout=35)
+    assert isinstance(raced,dict) and 'error' in raced,raced
+    print('PASS: in-flight response suppressed after root revocation')
+    assert removed['revision']==4 and '/fixture/repo-b' not in removed['additional']
     denied=b.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
     assert 'outside' in denied or 'escapes project root' in denied,denied
     assert b.tool('ctx_workspace_get')['revision']==4

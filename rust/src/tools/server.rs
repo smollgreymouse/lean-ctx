@@ -91,7 +91,6 @@ pub struct LeanCtxServer {
     pub(crate) workspace_registry: crate::server::workspace_registry::SharedWorkspaceRegistry,
     /// Bound at construction by the trusted launcher, never selected by a tool.
     pub(crate) workspace_store_path: Option<std::path::PathBuf>,
-    pub(crate) workspace_mutation_token: Option<String>,
     pub tool_calls: Arc<RwLock<Vec<ToolCallRecord>>>,
     pub call_count: Arc<AtomicUsize>,
     /// Every tool call, counted unconditionally at the top of

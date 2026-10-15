@@ -594,27 +594,6 @@ impl ServerHandler for LeanCtxServer {
                         serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
                     ));
                 }
-                if self.workspace_store_path.is_some()
-                    && self.workspace_mutation_token.is_some()
-                {
-                    tools.push(crate::tool_defs::tool_def(
-                        "ctx_workspace_create",
-                        "Initialize the launcher-bound Workspace file once (authorized management only)",
-                        serde_json::json!({"type":"object","properties":{
-                            "primaryRoot":{"type":"string"},"authorization":{"type":"string"}
-                        },"required":["primaryRoot","authorization"],"additionalProperties":false}),
-                    ));
-                    for name in ["ctx_workspace_add_root", "ctx_workspace_remove_root"] {
-                        tools.push(crate::tool_defs::tool_def(
-                            name,
-                            "Modify a launcher-bound Workspace with explicit authorization and optimistic revision check",
-                            serde_json::json!({"type":"object","properties":{
-                                "root":{"type":"string"}, "expectedRevision":{"type":"integer","minimum":1},
-                                "authorization":{"type":"string"}
-                            },"required":["root","expectedRevision","authorization"],"additionalProperties":false}),
-                        ));
-                    }
-                }
                 tools.push(crate::tool_defs::tool_def(
                     "ctx_workspace_get",
                     "Read this MCP connection's effective Workspace roots and authority provenance (read-only)",
@@ -718,103 +697,6 @@ impl ServerHandler for LeanCtxServer {
     ) -> Result<CallToolResult, ErrorData> {
         use std::panic::AssertUnwindSafe;
 
-        if matches!(
-            request.name.as_ref(),
-            "ctx_workspace_create" | "ctx_workspace_add_root" | "ctx_workspace_remove_root"
-        ) {
-            if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() != Ok("1") {
-                return Err(ErrorData::invalid_params(
-                    "Strict workspace mode required",
-                    None,
-                ));
-            }
-            let supplied = request
-                .arguments
-                .as_ref()
-                .and_then(|a| a.get("authorization"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let expected = self
-                .workspace_mutation_token
-                .as_ref()
-                .ok_or_else(|| ErrorData::invalid_params("Workspace mutation disabled", None))?;
-            // Compare digests, not variable-length secrets, to avoid direct
-            // string timing leakage. The token is never returned or logged.
-            if supplied.is_empty()
-                || blake3::hash(supplied.as_bytes()) != blake3::hash(expected.as_bytes())
-            {
-                return Err(ErrorData::invalid_params(
-                    "Workspace mutation unauthorized",
-                    None,
-                ));
-            }
-            let args = request
-                .arguments
-                .as_ref()
-                .ok_or_else(|| ErrorData::invalid_params("Missing arguments", None))?;
-            if request.name.as_ref() == "ctx_workspace_create" {
-                let root = args
-                    .get("primaryRoot")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| ErrorData::invalid_params("Missing primaryRoot", None))?;
-                self.resolve_roots_once().await;
-                let state = self.session.read().await;
-                let attached = state
-                    .project_root
-                    .as_ref()
-                    .and_then(|p| crate::server::workspace_store::validate_root(p).ok());
-                let target = crate::server::workspace_store::validate_root(root)
-                    .map_err(|_| ErrorData::invalid_params("Invalid primaryRoot", None))?;
-                if attached.as_deref() != Some(&target) {
-                    return Err(ErrorData::invalid_params(
-                        "Workspace primary root binding mismatch",
-                        None,
-                    ));
-                }
-                let store_path = self.workspace_store_path.as_deref().ok_or_else(|| {
-                    ErrorData::invalid_params("Workspace file not configured", None)
-                })?;
-                crate::server::workspace_store::initialized_store(store_path, &target).map_err(
-                    |_| ErrorData::invalid_params("Workspace file creation failed", None),
-                )?;
-                return Ok(CallToolResult::success(vec![
-                    rmcp::model::ContentBlock::text(
-                        serde_json::json!({"created":true,"primaryRoot":target,"revision":1})
-                            .to_string(),
-                    ),
-                ]));
-            }
-            let root = args
-                .get("root")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ErrorData::invalid_params("Missing root", None))?;
-            let revision = args
-                .get("expectedRevision")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| ErrorData::invalid_params("Missing expectedRevision", None))?;
-            let add = request.name.as_ref() == "ctx_workspace_add_root";
-            let change = crate::server::workspace_store::mutate(
-                self.workspace_store_path.as_deref().ok_or_else(|| {
-                    ErrorData::invalid_params("Workspace store not configured", None)
-                })?,
-                revision,
-                root,
-                add,
-            )
-            .map_err(|_| {
-                ErrorData::invalid_params("Workspace mutation failed or revision conflict", None)
-            })?;
-            return Ok(CallToolResult::success(vec![
-                rmcp::model::ContentBlock::text(
-                    serde_json::json!({
-                        "workspaceId": change.id, "revision": change.revision,
-                        "primaryRoot": change.primary, "additionalRoots": change.additional,
-                    })
-                    .to_string(),
-                ),
-            ]));
-        }
-
         // Strict isolation must not expose a bypass through ctx_shell, ctx_call,
         // arbitrary edits or specialized readers that do not honor PathJail.
         // These can be re-enabled only after an explicit source-admission audit.
@@ -903,7 +785,7 @@ impl ServerHandler for LeanCtxServer {
                 "additionalRoots": roots,
                 "rootSource": if stored.is_some() { "launcher-store" } else { "mcp-roots-list" },
                 "revision": stored.as_ref().map(|v| v.revision).unwrap_or(revision),
-                "mutable": stored.is_some() && self.workspace_mutation_token.is_some(),
+                "mutable": stored.is_some(),
                 "authenticatedWorkspace": stored.is_some(),
                 "legacyGlobalRootsInherited": false,
             });

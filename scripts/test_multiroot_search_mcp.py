@@ -25,7 +25,7 @@ if mode in ('store','create'):
   store.write_text(json.dumps({'id':'11111111-1111-4111-8111-111111111111','revision':1,'primary':'/fixture/repo-a','additional':[]}))
   store.chmod(0o600)
  cmd += ['--setenv','LEAN_CTX_WORKSPACE_FILE','/fixture/workspace.json',
-         '--setenv','LEAN_CTX_WORKSPACE_MUTATION_TOKEN','test-secret-only-in-sandbox']
+]
 if mode=='extra':cmd+=['--setenv','LEAN_CTX_EXTRA_ROOTS','/fixture/repo-b']
 if mode=='allow':cmd+=['--setenv','LEAN_CTX_ALLOW_PATH','/fixture/repo-b']
 if strict:
@@ -58,18 +58,18 @@ try:
   names=[t.get('name') for t in tools.get('result',{}).get('tools',[])]
   assert ('ctx_workspace_get' in names)==strict, ('workspace tool discovery',strict,names)
   assert ('ctx_workspace_list' in names)==strict
-  assert ('ctx_workspace_add_root' in names)==(strict and mode in ('store','create'))
+  assert 'ctx_workspace_add_root' not in names and 'ctx_workspace_create' not in names and 'ctx_workspace_remove_root' not in names
   assert ('ctx_workspace_diagnose' in names)==strict
   if strict:
    assert 'ctx_shell' not in names and 'ctx_call' not in names, names
+   def admin(action, *arguments):
+    command=cmd[:-3] + ['--','/bin/leanctx','workspace-admin',action,'/fixture/workspace.json',*map(str,arguments)]
+    return subprocess.run(command,capture_output=True,text=True,timeout=25)
    if mode=='create':
-    bad=request({'jsonrpc':'2.0','id':17,'method':'tools/call','params':{'name':'ctx_workspace_create','arguments':{'primaryRoot':'/fixture/repo-a','authorization':'bad'}}},25)
-    assert 'error' in bad,bad
-    initial=request({'jsonrpc':'2.0','id':18,'method':'tools/call','params':{'name':'ctx_workspace_create','arguments':{'primaryRoot':'/fixture/repo-a','authorization':'test-secret-only-in-sandbox'}}},25)
-    assert 'error' not in initial,initial
-    assert store.exists() and (store.stat().st_mode & 0o077)==0
-    again=request({'jsonrpc':'2.0','id':19,'method':'tools/call','params':{'name':'ctx_workspace_create','arguments':{'primaryRoot':'/fixture/repo-a','authorization':'test-secret-only-in-sandbox'}}},25)
-    assert 'error' in again,again
+    initial=admin('create','/fixture/repo-a')
+    assert initial.returncode==0,(initial.stdout,initial.stderr)
+    assert store.exists() and store.stat().st_mode & 0o077 == 0
+    assert admin('create','/fixture/repo-a').returncode!=0
    reject=request({'jsonrpc':'2.0','id':16,'method':'tools/call','params':{'name':'ctx_shell','arguments':{'command':'pwd'}}},25)
    assert 'error' in reject,reject
    resource=request({'jsonrpc':'2.0','id':15,'method':'resources/read',
@@ -95,26 +95,21 @@ try:
 
    print('WORKSPACE_API',json.dumps(document),flush=True)
    if mode in ('store','create'):
-    def call(name, arg, id):
-     reply=request({'jsonrpc':'2.0','id':id,'method':'tools/call','params':{'name':name,'arguments':arg}},25)
-     if 'error' in reply: return reply
-     return json.loads(next(x['text'] for x in reply['result']['content'] if x.get('type')=='text'))
-    token='test-secret-only-in-sandbox'
-    unauthorized=call('ctx_workspace_add_root',{'root':'/fixture/repo-b','expectedRevision':1,'authorization':'wrong'},40)
-    assert 'error' in unauthorized,unauthorized
-    added=call('ctx_workspace_add_root',{'root':'/fixture/repo-b','expectedRevision':1,'authorization':token},41)
-    assert added['revision']==2 and '/fixture/repo-b' in added['additionalRoots'],added
-    conflict=call('ctx_workspace_add_root',{'root':'/fixture/repo-b','expectedRevision':1,'authorization':token},42)
-    assert 'error' in conflict,conflict
+    added=admin('add','/fixture/repo-b',1)
+    assert added.returncode==0,(added.stdout,added.stderr)
+    assert json.loads(added.stdout)['revision']==2
+    assert admin('add','/fixture/repo-b',1).returncode!=0
     search_reply=request({'jsonrpc':'2.0','id':43,'method':'tools/call','params':{'name':'ctx_search','arguments':{'query':'cobalt lantern','path':'/fixture/repo-b'}}},25)
     search_text=' '.join(x.get('text','') for x in search_reply.get('result',{}).get('content',[]))
     assert '1 results' in search_text and 'cobalt lantern walnut b' in search_text,search_text
-    removed=call('ctx_workspace_remove_root',{'root':'/fixture/repo-b','expectedRevision':2,'authorization':token},44)
-    assert removed['revision']==3 and not removed['additionalRoots'],removed
+    removed=admin('remove','/fixture/repo-b',2)
+    assert removed.returncode==0,(removed.stdout,removed.stderr)
+    assert json.loads(removed.stdout)['revision']==3
     response=request({'jsonrpc':'2.0','id':45,'method':'tools/call','params':{'name':'ctx_search','arguments':{'query':'cobalt lantern','path':'/fixture/repo-b'}}},25)
     text=' '.join(x.get('text','') for x in response.get('result',{}).get('content',[]))
     assert 'escapes project root' in text or 'outside' in text,text
-    after=call('ctx_workspace_get',{},46)
+    after_response=request({'jsonrpc':'2.0','id':46,'method':'tools/call','params':{'name':'ctx_workspace_get','arguments':{}}},25)
+    after=json.loads(next(x['text'] for x in after_response['result']['content'] if x.get('type')=='text'))
     assert after['revision']==3 and after['additionalRoots']==[],after
     print('WORKSPACE_MUTATIONS','PASS',flush=True)
 
