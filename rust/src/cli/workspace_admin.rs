@@ -57,6 +57,19 @@ fn verify_same_process_isolation() -> Result<(), String> {
 
 pub(crate) fn run(args: &[String]) -> i32 {
     #[cfg(debug_assertions)]
+    if args.first().map(String::as_str) == Some("self-test-mcp-dual") {
+        return match verify_dual_mcp_handler_isolation() {
+            Ok(()) => {
+                println!("PASS: two concurrent MCP handlers have distinct Workspace authority");
+                0
+            }
+            Err(error) => {
+                eprintln!("FAIL: {error}");
+                1
+            }
+        };
+    }
+    #[cfg(debug_assertions)]
     if args.first().map(String::as_str) == Some("self-test-isolation") {
         return match verify_same_process_isolation() {
             Ok(()) => {
@@ -114,4 +127,73 @@ pub(crate) fn run(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+#[cfg(debug_assertions)]
+fn verify_dual_mcp_handler_isolation() -> Result<(), String> {
+    use crate::engine::ContextEngine;
+    use crate::tools::LeanCtxServer;
+    let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let ra = tmp.path().join("repo-a");
+    let rb = tmp.path().join("repo-b");
+    let rc = tmp.path().join("repo-c");
+    for (path, marker) in [
+        (&ra, "orion_cobalt_A_secret"),
+        (&rb, "violet_amber_B_secret"),
+        (&rc, "silver_C_secret"),
+    ] {
+        std::fs::create_dir(path).map_err(|e| e.to_string())?;
+        std::fs::create_dir(path.join(".git")).map_err(|e| e.to_string())?;
+        std::fs::write(path.join("unique.txt"), marker).map_err(|e| e.to_string())?;
+    }
+    let store_a = tmp.path().join("workspace-A.json");
+    let store_c = tmp.path().join("workspace-C.json");
+    crate::server::workspace_store::initialized_store(&store_a, ra.to_str().unwrap())?;
+    crate::server::workspace_store::initialized_store(&store_c, rc.to_str().unwrap())?;
+    crate::server::workspace_store::mutate(&store_a, 1, rb.to_str().unwrap(), true)?;
+    let mut server_a = LeanCtxServer::new_with_project_root(ra.to_str());
+    let mut server_c = LeanCtxServer::new_with_project_root(rc.to_str());
+    server_a.workspace_store_path = Some(store_a);
+    server_c.workspace_store_path = Some(store_c);
+    let engine_a = ContextEngine::from_server(server_a);
+    let engine_c = ContextEngine::from_server(server_c);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(3)
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    rt.block_on(async move {
+        let (a, c) = tokio::join!(
+            engine_a.call_tool_value("ctx_workspace_get", None),
+            engine_c.call_tool_value("ctx_workspace_get", None),
+        );
+        let a = a.map_err(|e| e.to_string())?.to_string();
+        let c = c.map_err(|e| e.to_string())?.to_string();
+        if !a.contains("repo-b")
+            || c.contains("repo-b")
+            || a.contains("repo-c")
+            || !c.contains("repo-c")
+        {
+            return Err(format!("Workspace identity leak: A={a}, C={c}"));
+        }
+        let (allowed, forbidden) = tokio::join!(
+            engine_a.call_tool_value(
+                "ctx_read",
+                Some(serde_json::json!({"path":rb.join("unique.txt").to_string_lossy()}))
+            ),
+            engine_c.call_tool_value(
+                "ctx_read",
+                Some(serde_json::json!({"path":rb.join("unique.txt").to_string_lossy()}))
+            ),
+        );
+        let allowed = allowed.map_err(|e| e.to_string())?.to_string();
+        let forbidden = forbidden.map_err(|e| e.to_string())?.to_string();
+        if !allowed.contains("violet_amber_B_secret") || forbidden.contains("violet_amber_B_secret")
+        {
+            return Err(format!(
+                "MCP handler root isolation violated: allowed={allowed}; denied={forbidden}"
+            ));
+        }
+        Ok(())
+    })
 }
