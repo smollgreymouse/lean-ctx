@@ -19,7 +19,7 @@ for name in ('a', 'b', 'c', 'd', 'outside'):
     repo.mkdir()
     (repo / '.git').mkdir()
     (repo / ('source-' + name + '.txt')).write_text('cobalt lantern visible ' + name)
-for name in ('home-a','home-b','home-c','data-a','data-b','data-c','tmp'):
+for name in ('home-a','home-b','home-c','home-d','data-a','data-b','data-c','data-d','tmp'):
     (base / name).mkdir()
 file = base / 'workspace.json'
 file.write_text(json.dumps({'id': '11111111-1111-4111-8111-111111111111',
@@ -29,6 +29,10 @@ second = base / 'workspace-other.json'
 second.write_text(json.dumps({'id': '22222222-2222-4222-8222-222222222222',
                              'revision': 1, 'primary': '/fixture/repo-c', 'additional': []}))
 second.chmod(0o600)
+third = base / 'workspace-same-primary.json'
+third.write_text(json.dumps({'id': '33333333-3333-4333-8333-333333333333',
+                             'revision': 1, 'primary': '/fixture/repo-a', 'additional': []}))
+third.chmod(0o600)
 
 class Client:
     def __init__(self, tag, root, store):
@@ -84,11 +88,13 @@ try:
     a = Client('a','a','workspace.json'); clients.append(a)
     b = Client('b','a','workspace.json'); clients.append(b)
     c = Client('c','c','workspace-other.json'); clients.append(c)
+    d = Client('d','a','workspace-same-primary.json'); clients.append(d)
     first = a.tool('ctx_workspace_get')
     other = b.tool('ctx_workspace_get')
     isolated = c.tool('ctx_workspace_get')
     assert first['workspaceId']==other['workspaceId'] and first['revision']==1
     assert isolated['workspaceId']!=first['workspaceId']
+    assert d.tool('ctx_workspace_get')['workspaceId']!=first['workspaceId']
     denied_other = c.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
     assert 'outside' in denied_other or 'escapes project root' in denied_other, denied_other
     def admin(action, store, root, revision):
@@ -105,6 +111,11 @@ try:
     observed = b.tool('ctx_workspace_get')
     assert observed['revision']==2 and '/fixture/repo-b' in observed['additionalRoots']
     assert 'visible b' in b.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
+    # Same primary root, different additional roots, same query and warm cache.
+    for _ in range(3):
+        denied_d=d.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
+        assert 'outside' in denied_d or 'escapes project root' in denied_d,denied_d
+    print('PASS: warm-cache same-primary separate-authority rejection')
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         f1=pool.submit(admin,'add','workspace.json','/fixture/repo-c',2)
         f2=pool.submit(admin,'add','workspace.json','/fixture/repo-d',2)
@@ -135,6 +146,24 @@ try:
     reloaded = restarted.tool('ctx_workspace_get')
     assert reloaded['revision']==4 and reloaded['workspaceId']==first['workspaceId'],reloaded
     assert c.tool('ctx_workspace_get')['workspaceId']==isolated['workspaceId']
+    # ABA: removing and re-adding a root does not restore an old revision.
+    readded=admin('add','workspace.json','/fixture/repo-b',4)
+    assert readded['revision']==5,readded
+    assert 'visible b' in restarted.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
+    assert 'error' in admin('remove','workspace.json','/fixture/repo-b',3)
+    assert 'error' in admin('remove','workspace.json','/fixture/repo-b',4)
+    removed_again=admin('remove','workspace.json','/fixture/repo-b',5)
+    assert removed_again['revision']==6,removed_again
+    assert 'escapes project root' in restarted.tool('ctx_search',{'query':'cobalt lantern','path':'/fixture/repo-b'})
+    # A world-readable or symlinked state file cannot be accepted by admin.
+    file.chmod(0o644)
+    assert 'error' in admin('add','workspace.json','/fixture/repo-b',6)
+    file.chmod(0o600)
+    evil=base/'evil.json'
+    evil.symlink_to(file)
+    assert 'error' in admin('add','evil.json','/fixture/repo-b',6)
+    assert restarted.tool('ctx_workspace_get')['revision']==6
+    print('PASS: ABA denial, 0600 and symlink protections')
     print('PASS: shared-store CAS, live add/remove, isolated other workspace, revision stability')
 finally:
     for c in clients:c.close()
