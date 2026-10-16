@@ -184,6 +184,7 @@ impl SessionState {
             last_consolidate_ts: None,
             last_aaak_hash: None,
             extra_roots: Vec::new(),
+            client_workspace_roots: Vec::new(),
             live_zone: super::types::LiveZoneSessionState::default(),
             wakeup_manifest: Vec::new(),
             playbook: super::playbook::Playbook::default(),

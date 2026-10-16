@@ -24,7 +24,7 @@ use super::hnsw::{AnnIndex, FlatEmbeddings, brute_force_topk};
 pub(crate) const ANN_MIN_VECTORS: usize = 2_500;
 
 struct Cached {
-    fingerprint: u64,
+    fingerprint: [u8; 32],
     index: AnnIndex,
 }
 
@@ -102,47 +102,71 @@ fn topk_gated(
     }
 }
 
-/// Cheap, content-sensitive fingerprint (FNV-1a over lengths + sampled values).
-/// Operates directly on the flat [`FlatEmbeddings`] buffer.
-fn fingerprint(embeddings: &FlatEmbeddings) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    macro_rules! mix {
-        ($x:expr_2021) => {{
-            h ^= $x;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }};
+/// Full content hash for the embedding matrix.
+///
+/// This key is correctness- and isolation-sensitive: a sampled fingerprint can
+/// alias distinct corpora and make the process-wide HNSW cache serve a graph
+/// built from another request's embeddings.
+fn fingerprint(embeddings: &FlatEmbeddings) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&(embeddings.n_vectors() as u64).to_le_bytes());
+    hasher.update(&(embeddings.dim as u64).to_le_bytes());
+    let mut bytes = Vec::with_capacity(4096);
+    for chunk in embeddings.data.chunks(1024) {
+        bytes.clear();
+        for value in chunk {
+            bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+        }
+        hasher.update(&bytes);
     }
-    let n = embeddings.n_vectors();
-    mix!(n as u64);
-    mix!(embeddings.dim as u64);
-    for i in 0..n {
-        let v = embeddings.get(i);
-        mix!(i as u64);
-        if let Some(&f) = v.first() {
-            mix!(u64::from(f.to_bits()));
-        }
-        if let Some(&f) = v.get(v.len() / 2) {
-            mix!(u64::from(f.to_bits()));
-        }
-        if let Some(&f) = v.last() {
-            mix!(u64::from(f.to_bits()));
-        }
-    }
-    h
+    *hasher.finalize().as_bytes()
 }
 
-/// Cross-module test lock for the process-wide cache slot above. `clear()`
-/// is called from more than one module's tests (this module's own HNSW-path
-/// tests, and `eviction_orchestrator`'s eviction tests) — every test that
-/// builds/reads/clears the shared cache must hold this for its duration, or
-/// a parallel `clear()` from an unrelated test can wipe it mid-assertion.
-/// Poison is recovered since a panic in one test must not cascade into others.
+/// Cross-module test lock for the process-wide ANN cache. All unit tests that
+/// mutate/read/clear the shared slot must serialize through this guard.
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn debug_adversarial_fingerprint_self_test() -> Result<(), String> {
+    let _serial = {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| "ANN test lock poisoned")?
+    };
+    clear();
+    let n = 1100usize;
+    let mut a = Vec::with_capacity(n);
+    let mut b = Vec::with_capacity(n);
+    for i in 0..n {
+        let ta = std::f32::consts::TAU * (i as f32) / (n as f32);
+        let tb = std::f32::consts::TAU * ((n - 1 - i) as f32) / (n as f32);
+        a.push(vec![0.2, ta.cos(), 0.3, ta.sin(), 0.4]);
+        b.push(vec![0.2, tb.cos(), 0.3, tb.sin(), 0.4]);
+    }
+    let a = FlatEmbeddings::from_vecs(a);
+    let b = FlatEmbeddings::from_vecs(b);
+    if fingerprint(&a) == fingerprint(&b) {
+        return Err("full ANN corpus hash collided for adversarial corpora".into());
+    }
+    let query = b.get_vec(100);
+    let _ = topk_gated(&a, &query, 8, 1000);
+    let cached = topk_gated(&b, &query, 8, 1000);
+    let exact = brute_force_topk(&b, &query, 8);
+    if cached.first().map(|x| x.0) != exact.first().map(|x| x.0) {
+        return Err(format!(
+            "ANN cache failed to rebuild for distinct corpus: cached_top={:?}, exact_top={:?}",
+            cached.first().map(|x| x.0),
+            exact.first().map(|x| x.0)
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -160,7 +184,7 @@ mod tests {
 
     /// Reads the fingerprint of the currently cached index (test-only
     /// introspection; `tests` is a child module so it may touch private state).
-    fn cached_fingerprint() -> Option<u64> {
+    fn cached_fingerprint() -> Option<[u8; 32]> {
         cache()
             .lock()
             .ok()

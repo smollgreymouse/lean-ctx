@@ -243,6 +243,9 @@ impl LeanCtxServer {
         Self {
             cache,
             session,
+            workspace_registry: crate::server::workspace_registry::new_registry(),
+            workspace_store_path: std::env::var_os("LEAN_CTX_WORKSPACE_FILE")
+                .map(std::path::PathBuf::from),
             tool_calls: Arc::new(RwLock::new(Vec::new())),
             call_count: Arc::new(AtomicUsize::new(0)),
             background_tick: Arc::new(AtomicUsize::new(0)),
@@ -297,7 +300,6 @@ impl LeanCtxServer {
             roots_resolved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             roots_list_attempts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             bm25_cache,
-            progress_sender: Arc::new(std::sync::Mutex::new(None)),
             _eviction_target: eviction_target,
             last_tools_config_hash: Arc::new(std::sync::atomic::AtomicU64::new(
                 crate::server::tools_config_watch::current_hash(),

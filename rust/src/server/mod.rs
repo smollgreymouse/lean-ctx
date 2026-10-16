@@ -443,3 +443,10 @@ mod tests {
         );
     }
 }
+
+pub(crate) mod workspace_registry;
+
+pub(crate) mod workspace_store;
+
+#[cfg(debug_assertions)]
+pub(crate) mod workspace_test_hooks;

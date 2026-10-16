@@ -61,3 +61,16 @@ impl ProgressSender {
 }
 
 pub type SharedProgressSender = std::sync::Arc<std::sync::Mutex<Option<ProgressSender>>>;
+tokio::task_local! {
+    /// Request-scoped progress sink. A server may process concurrent requests;
+    /// routing progress through server-global mutable state can cross client boundaries.
+    pub(crate) static REQUEST_PROGRESS_SENDER: Option<ProgressSender>;
+}
+
+pub(crate) fn current_shared_sender() -> SharedProgressSender {
+    let current = REQUEST_PROGRESS_SENDER
+        .try_with(Clone::clone)
+        .ok()
+        .flatten();
+    std::sync::Arc::new(std::sync::Mutex::new(current))
+}
