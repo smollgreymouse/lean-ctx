@@ -2,11 +2,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use anyhow::{Context, Result, anyhow};
+#[cfg(debug_assertions)]
+use rmcp::model::{GetMeta, ProgressToken};
 use rmcp::{
     model::{
         CallToolRequest, CallToolRequestParams, CallToolResult, ClientJsonRpcMessage,
-        ClientRequest, GetMeta, JsonRpcRequest, NumberOrString, ProgressToken,
-        ServerJsonRpcMessage, ServerResult,
+        ClientRequest, JsonRpcRequest, NumberOrString, ServerJsonRpcMessage, ServerResult,
     },
     service::RoleServer,
     service::serve_directly,

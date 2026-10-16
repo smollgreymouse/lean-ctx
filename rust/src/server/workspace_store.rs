@@ -4,14 +4,18 @@
 //! the JSON atomically and are never performed inside an allowed project root.
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+#[cfg(not(unix))]
+use std::fs;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,7 +117,7 @@ impl StoreAnchor {
                 self.dir.as_raw_fd(),
                 c.as_ptr(),
                 flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                mode,
+                mode as libc::c_uint,
             )
         };
         if fd < 0 {
