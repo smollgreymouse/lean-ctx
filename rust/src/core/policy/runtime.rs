@@ -52,6 +52,7 @@ tokio::task_local! {
 /// A snapshot must be built from authenticated session state, not tool arguments.
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceSnapshot {
+    pub(crate) workspace_id: Option<String>,
     pub(crate) primary_root: PathBuf,
     pub(crate) additional_roots: Vec<PathBuf>,
     pub(crate) revision: u64,

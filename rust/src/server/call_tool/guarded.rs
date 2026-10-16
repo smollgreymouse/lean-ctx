@@ -257,6 +257,7 @@ impl LeanCtxServer {
                                     return None;
                                 }
                                 Some(crate::core::policy::runtime::WorkspaceSnapshot {
+                                    workspace_id: Some(store.id.clone()),
                                     primary_root: primary,
                                     additional_roots: store
                                         .additional
@@ -290,6 +291,7 @@ impl LeanCtxServer {
                                     })
                                     .collect();
                                 Some(crate::core::policy::runtime::WorkspaceSnapshot {
+                                    workspace_id: None,
                                     primary_root,
                                     additional_roots,
                                     revision: 0,

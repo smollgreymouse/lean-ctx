@@ -829,6 +829,7 @@ mod tests {
             let c1 = primary_c.clone();
             let first = scope.spawn(move || {
                 let snapshot = crate::core::policy::runtime::WorkspaceSnapshot {
+                    workspace_id: None,
                     primary_root: a1.clone(),
                     additional_roots: vec![b_root1.clone()],
                     revision: 7,
@@ -844,6 +845,7 @@ mod tests {
             let b_root2 = root_b.clone();
             let second = scope.spawn(move || {
                 let snapshot = crate::core::policy::runtime::WorkspaceSnapshot {
+                    workspace_id: None,
                     primary_root: c2.clone(),
                     additional_roots: vec![],
                     revision: 3,
@@ -877,11 +879,13 @@ mod tests {
             std::fs::write(dir.join("marker.txt"), "marker").unwrap();
         }
         let snap_a = crate::core::policy::runtime::WorkspaceSnapshot {
+            workspace_id: None,
             primary_root: a.canonicalize().unwrap(),
             additional_roots: vec![b.canonicalize().unwrap()],
             revision: 1,
         };
         let snap_c = crate::core::policy::runtime::WorkspaceSnapshot {
+            workspace_id: None,
             primary_root: c.canonicalize().unwrap(),
             additional_roots: Vec::new(),
             revision: 9,

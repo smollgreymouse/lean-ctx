@@ -25,7 +25,7 @@ pub(crate) fn new_registry() -> SharedWorkspaceRegistry {
 
 impl WorkspaceRegistry {
     /// Returns true only when the effective authorization snapshot changes.
-    pub fn update(&mut self, primary: String, mut additional: Vec<String>) -> bool {
+    pub(crate) fn update(&mut self, primary: String, mut additional: Vec<String>) -> bool {
         additional.sort();
         additional.dedup();
         additional.retain(|root| root != &primary);

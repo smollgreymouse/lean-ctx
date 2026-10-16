@@ -100,9 +100,18 @@ impl ServerHandler for LeanCtxServer {
             tracing::info!("Client supports MCP roots/list — will resolve on first tool call");
         }
 
-        let env_root = roots::root_from_env().or_else(roots::root_from_workspace_env);
-        let derived_root = derive_project_root_from_cwd();
-        let effective_root = env_root.or(derived_root);
+        let effective_root = if self.workspace_store_path.is_some()
+            && std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1")
+        {
+            // A launcher-bound Workspace is the authority source. Do not let
+            // process CWD/env silently replace its trusted primary binding at
+            // MCP initialize time; the store/primary equality is checked on use.
+            self.startup_project_root.clone()
+        } else {
+            let env_root = roots::root_from_env().or_else(roots::root_from_workspace_env);
+            let derived_root = derive_project_root_from_cwd();
+            env_root.or(derived_root)
+        };
 
         let cwd_str = std::env::current_dir()
             .ok()
@@ -813,14 +822,9 @@ impl ServerHandler for LeanCtxServer {
             .meta
             .as_ref()
             .and_then(rmcp::model::Meta::get_progress_token);
-        if let Some(ref token) = progress_token {
-            let sender =
-                crate::server::progress::ProgressSender::new(context.peer.clone(), token.clone());
-            *self
-                .progress_sender
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
-        }
+        let request_progress_sender = progress_token.as_ref().map(|token| {
+            crate::server::progress::ProgressSender::new(context.peer.clone(), token.clone())
+        });
 
         let tool_name_for_panic = request.name.as_ref().to_string();
         let args_fp_for_panic = request
@@ -840,8 +844,11 @@ impl ServerHandler for LeanCtxServer {
         // so a tool that waits on a child process can observe an abandoned call
         // instead of holding its blocking-pool slot until its own soft cap.
         match AssertUnwindSafe(
-            crate::server::tool_trait::REQUEST_CT
-                .scope(ct.clone(), self.call_tool_guarded(request)),
+            crate::server::progress::REQUEST_PROGRESS_SENDER.scope(
+                request_progress_sender,
+                crate::server::tool_trait::REQUEST_CT
+                    .scope(ct.clone(), self.call_tool_guarded(request)),
+            ),
         )
         .catch_unwind()
         .await

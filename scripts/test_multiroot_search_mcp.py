@@ -18,10 +18,10 @@ mode=sys.argv[1] if len(sys.argv)>1 else 'default'
 strict = mode.startswith('strict-')
 if strict:
  mode = mode[len('strict-'):]
-assert mode in ('default','allow','extra','roots','store','create')
-if mode in ('store','create'):
+assert mode in ('default','allow','extra','roots','store','store-forged','create')
+if mode in ('store','store-forged','create'):
  store = b/'workspace.json'
- if mode=='store':
+ if mode in ('store','store-forged'):
   store.write_text(json.dumps({'id':'11111111-1111-4111-8111-111111111111','revision':1,'primary':'/fixture/repo-a','additional':[]}))
   store.chmod(0o600)
  cmd += ['--setenv','LEAN_CTX_WORKSPACE_FILE','/fixture/workspace.json',
@@ -50,7 +50,7 @@ def request(obj,limit=18):
   except Exception: pass
  return {'error':'timeout or closed','returncode':p.poll()}
 try:
- init=request({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':({'roots':{'listChanged':True}} if mode=='roots' else {}),'clientInfo':{'name':'isolated-baseline','version':'1'}}},30)
+ init=request({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':({'roots':{'listChanged':True}} if mode in ('roots','store-forged') else {}),'clientInfo':{'name':'isolated-baseline','version':'1'}}},30)
  print('INIT',str(init)[:1000],flush=True)
  if 'result' in init:
   p.stdin.write(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized','params':{}})+'\n');p.stdin.flush()
@@ -80,8 +80,8 @@ try:
    document=json.loads(next(x['text'] for x in parts if x.get('type')=='text'))
    assert document['primaryRoot']=='/fixture/repo-a',document
    assert document['additionalRoots']==(['/fixture/repo-b'] if mode=='roots' else []), document
-   assert document['authenticatedWorkspace'] is (mode in ('store','create')),document
-   assert document['mutable'] is (mode in ('store','create')),document
+   assert document['authenticatedWorkspace'] is (mode in ('store','store-forged','create')),document
+   assert document['mutable'] is (mode in ('store','store-forged','create')),document
    assert document['revision']==1,document
    assert isinstance(document['workspaceId'],str) and len(document['workspaceId'])>10
    for index, tool in enumerate(('ctx_workspace_get','ctx_workspace_list','ctx_workspace_diagnose'),21):
@@ -94,7 +94,14 @@ try:
     if tool=='ctx_workspace_diagnose': assert obj['status'] in ('read_only_untrusted_roots','launcher_bound')
 
    print('WORKSPACE_API',json.dumps(document),flush=True)
-   if mode in ('store','create'):
+   if mode=='store-forged':
+    forged=request({'jsonrpc':'2.0','id':47,'method':'tools/call','params':{
+      'name':'ctx_search','arguments':{'query':'cobalt lantern','path':'/fixture/repo-b'},
+      '_meta':{'workspaceId':'22222222-2222-4222-8222-222222222222','threadId':'forged-thread'}}},25)
+    forged_text=' '.join(x.get('text','') for x in forged.get('result',{}).get('content',[]))
+    assert 'outside' in forged_text or 'escapes project root' in forged_text,forged_text
+    print('FORGED_CLIENT_AUTHORITY_DENIED PASS',flush=True)
+   if mode in ('store','store-forged','create'):
     added=admin('add','/fixture/repo-b',1)
     assert added.returncode==0,(added.stdout,added.stderr)
     assert json.loads(added.stdout)['revision']==2

@@ -4,6 +4,7 @@
 This is a cross-process test; it does NOT prove multiple MCP clients in one process.
 """
 import concurrent.futures
+import random
 import json
 import os
 from pathlib import Path
@@ -163,6 +164,33 @@ try:
     evil.symlink_to(file)
     assert 'error' in admin('add','evil.json','/fixture/repo-b',6)
     assert restarted.tool('ctx_workspace_get')['revision']==6
+
+    # Bounded deterministic churn/fuzz: 100 CAS mutations observed live by two
+    # already-open MCP clients. This exercises revision monotonicity, no-op
+    # semantics, stale-CAS rejection and cross-process reload under varied order.
+    rng=random.Random(1337)
+    live=restarted.tool('ctx_workspace_get')
+    revision=live['revision']; expected=set(live['additionalRoots'])
+    candidates=['/fixture/repo-b','/fixture/repo-c','/fixture/repo-d']
+    for step in range(100):
+        root=rng.choice(candidates); action=rng.choice(['add','remove'])
+        changed=(action=='add' and root not in expected) or (action=='remove' and root in expected)
+        outcome=admin(action,'workspace.json',root,revision)
+        assert 'error' not in outcome,(step,action,root,revision,outcome)
+        expected_revision=revision + (1 if changed else 0)
+        assert outcome['revision']==expected_revision,(step,outcome,expected_revision)
+        revision=expected_revision
+        if action=='add': expected.add(root)
+        else: expected.discard(root)
+        if step % 10 == 0 and revision>1:
+            stale=admin(action,'workspace.json',root,revision-1)
+            assert 'error' in stale,(step,'stale CAS unexpectedly won',stale)
+        if step % 5 == 0:
+            for peer in (b,restarted):
+                seen=peer.tool('ctx_workspace_get')
+                assert seen['revision']==revision,(step,seen,revision)
+                assert set(seen['additionalRoots'])==expected,(step,seen,expected)
+    print('PASS: 100-step deterministic CAS/live-reload churn')
     print('PASS: ABA denial, 0600 and symlink protections')
     print('PASS: shared-store CAS, live add/remove, isolated other workspace, revision stability')
 finally:

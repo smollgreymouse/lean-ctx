@@ -4,8 +4,12 @@
 //! the JSON atomically and are never performed inside an allowed project root.
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::{
-    fs::{self, OpenOptions},
+    fs::OpenOptions,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -26,6 +30,7 @@ fn validate_store_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(unix))]
 fn private_options() -> OpenOptions {
     let mut opts = OpenOptions::new();
     opts.read(true).write(true);
@@ -52,24 +57,154 @@ fn verify_private_file(file: &std::fs::File) -> Result<(), String> {
     Ok(())
 }
 
-fn lock_path(path: &Path) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .ok_or("Workspace file name missing")?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!("{file_name}.lock")))
+#[cfg(unix)]
+struct StoreAnchor {
+    dir: std::fs::File,
+    stable_parent: PathBuf,
+    name: std::ffi::OsString,
 }
 
-fn acquire_lock_file(path: &Path) -> Result<std::fs::File, String> {
-    validate_store_path(path)?;
-    let lock = private_options()
-        .create(true)
-        .open(lock_path(path)?)
+#[cfg(unix)]
+impl StoreAnchor {
+    fn open(path: &Path) -> Result<Self, String> {
+        validate_store_path(path)?;
+        let parent = path.parent().ok_or("Missing parent directory")?;
+        let stable_parent = parent.canonicalize().map_err(|e| e.to_string())?;
+        // Reject an already-symlinked/aliased parent; after this point the opened
+        // dirfd is the authority anchor and survives rename/symlink swaps safely.
+        if stable_parent != parent {
+            return Err("Workspace parent directory must be canonical and non-symlinked".into());
+        }
+        let mut opts = OpenOptions::new();
+        opts.read(true);
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let dir = opts.open(&stable_parent).map_err(|e| e.to_string())?;
+        if !dir.metadata().map_err(|e| e.to_string())?.is_dir() {
+            return Err("Workspace parent is not a directory".into());
+        }
+        #[cfg(debug_assertions)]
+        crate::server::workspace_test_hooks::external_hit("store_before_open");
+        let name = path
+            .file_name()
+            .ok_or("Workspace file name missing")?
+            .to_os_string();
+        Ok(Self {
+            dir,
+            stable_parent,
+            name,
+        })
+    }
+
+    fn c_name(name: &std::ffi::OsStr) -> Result<std::ffi::CString, String> {
+        std::ffi::CString::new(name.as_bytes())
+            .map_err(|_| "Workspace filename contains NUL".into())
+    }
+
+    fn open_named(
+        &self,
+        name: &std::ffi::OsStr,
+        flags: i32,
+        mode: libc::mode_t,
+    ) -> Result<std::fs::File, String> {
+        let c = Self::c_name(name)?;
+        let fd = unsafe {
+            libc::openat(
+                self.dir.as_raw_fd(),
+                c.as_ptr(),
+                flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                mode,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        Ok(file)
+    }
+
+    fn open_store(&self) -> Result<std::fs::File, String> {
+        let file = self.open_named(&self.name, libc::O_RDWR, 0)?;
+        verify_private_file(&file)?;
+        Ok(file)
+    }
+
+    fn lock_name(&self) -> std::ffi::OsString {
+        let mut name = self.name.clone();
+        name.push(".lock");
+        name
+    }
+
+    fn open_lock(&self) -> Result<std::fs::File, String> {
+        let name = self.lock_name();
+        let file = self.open_named(&name, libc::O_RDWR | libc::O_CREAT, 0o600)?;
+        verify_private_file(&file)?;
+        Ok(file)
+    }
+
+    fn create_store(&self) -> Result<std::fs::File, String> {
+        let file = self.open_named(
+            &self.name,
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )?;
+        verify_private_file(&file)?;
+        Ok(file)
+    }
+
+    fn store_display_path(&self) -> PathBuf {
+        self.stable_parent.join(&self.name)
+    }
+
+    fn temporary_name(&self) -> std::ffi::OsString {
+        let mut name = std::ffi::OsString::from(".");
+        name.push(&self.name);
+        name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
+        name
+    }
+
+    fn rename_within(&self, from: &std::ffi::OsStr, to: &std::ffi::OsStr) -> Result<(), String> {
+        let from = Self::c_name(from)?;
+        let to = Self::c_name(to)?;
+        let rc = unsafe {
+            libc::renameat(
+                self.dir.as_raw_fd(),
+                from.as_ptr(),
+                self.dir.as_raw_fd(),
+                to.as_ptr(),
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
+
+    fn unlink(&self, name: &std::ffi::OsStr) {
+        if let Ok(name) = Self::c_name(name) {
+            unsafe {
+                libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), 0);
+            }
+        }
+    }
+
+    fn sync_dir(&self) -> Result<(), String> {
+        self.dir.sync_all().map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(unix)]
+fn read_unlocked(anchor: &StoreAnchor) -> Result<StoredWorkspace, String> {
+    let file = anchor.open_store()?;
+    let mut data = String::new();
+    (&file)
+        .read_to_string(&mut data)
         .map_err(|e| e.to_string())?;
-    verify_private_file(&lock)?;
-    Ok(lock)
+    let value: StoredWorkspace = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    validate_value(&anchor.store_display_path(), value)
 }
 
+#[cfg(not(unix))]
 fn read_unlocked(path: &Path) -> Result<StoredWorkspace, String> {
     validate_store_path(path)?;
     let file = private_options().open(path).map_err(|e| e.to_string())?;
@@ -79,6 +214,10 @@ fn read_unlocked(path: &Path) -> Result<StoredWorkspace, String> {
         .read_to_string(&mut data)
         .map_err(|e| e.to_string())?;
     let value: StoredWorkspace = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    validate_value(path, value)
+}
+
+fn validate_value(store_path: &Path, value: StoredWorkspace) -> Result<StoredWorkspace, String> {
     if value.revision == 0 || uuid::Uuid::parse_str(&value.id).is_err() {
         return Err("Invalid Workspace identity or revision".into());
     }
@@ -93,7 +232,7 @@ fn read_unlocked(path: &Path) -> Result<StoredWorkspace, String> {
     if value.additional.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err("Workspace roots must be sorted and unique".into());
     }
-    reject_store_in_roots(path, &value)?;
+    reject_store_in_roots(store_path, &value)?;
     Ok(value)
 }
 
@@ -118,6 +257,33 @@ fn reject_store_in_roots(path: &Path, value: &StoredWorkspace) -> Result<(), Str
     Ok(())
 }
 
+#[cfg(unix)]
+fn atomic_save(anchor: &StoreAnchor, value: &StoredWorkspace) -> Result<(), String> {
+    let temporary = anchor.temporary_name();
+    let result = (|| -> Result<(), String> {
+        let mut file = anchor.open_named(
+            &temporary,
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )?;
+        verify_private_file(&file)?;
+        file.write_all(&serde_json::to_vec(value).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        #[cfg(debug_assertions)]
+        crate::server::workspace_test_hooks::external_hit("store_before_rename");
+        anchor.rename_within(&temporary, &anchor.name)?;
+        #[cfg(debug_assertions)]
+        crate::server::workspace_test_hooks::external_hit("store_after_rename_before_dir_fsync");
+        anchor.sync_dir()
+    })();
+    if result.is_err() {
+        anchor.unlink(&temporary);
+    }
+    result
+}
+
+#[cfg(not(unix))]
 fn sync_parent(path: &Path) -> Result<(), String> {
     let parent = path.parent().ok_or("Missing parent directory")?;
     std::fs::File::open(parent)
@@ -125,6 +291,7 @@ fn sync_parent(path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(not(unix))]
 fn atomic_save(path: &Path, value: &StoredWorkspace) -> Result<(), String> {
     let name = path
         .file_name()
@@ -149,11 +316,26 @@ fn atomic_save(path: &Path, value: &StoredWorkspace) -> Result<(), String> {
 }
 
 pub(crate) fn load(path: &Path) -> Result<StoredWorkspace, String> {
-    let lock = acquire_lock_file(path)?;
-    FileExt::lock_shared(&lock).map_err(|e| e.to_string())?;
-    let result = read_unlocked(path);
-    let _ = FileExt::unlock(&lock);
-    result
+    #[cfg(unix)]
+    {
+        let anchor = StoreAnchor::open(path)?;
+        let lock = anchor.open_lock()?;
+        FileExt::lock_shared(&lock).map_err(|e| e.to_string())?;
+        let result = read_unlocked(&anchor);
+        let _ = FileExt::unlock(&lock);
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        let lock = private_options()
+            .create(true)
+            .open(path.with_extension("lock"))
+            .map_err(|e| e.to_string())?;
+        FileExt::lock_shared(&lock).map_err(|e| e.to_string())?;
+        let result = read_unlocked(path);
+        let _ = FileExt::unlock(&lock);
+        result
+    }
 }
 
 pub(crate) fn mutate(
@@ -163,57 +345,117 @@ pub(crate) fn mutate(
     add: bool,
 ) -> Result<StoredWorkspace, String> {
     let root = validate_root(root)?;
-    let lock = acquire_lock_file(path)?;
-    FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
-    let mut value = read_unlocked(path)?;
-    if value.revision != expected {
-        return Err("Workspace revision conflict".into());
-    }
-    if root == value.primary {
-        return Err("Primary root is immutable".into());
-    }
-    let before = value.additional.clone();
-    if add {
-        if !value.additional.contains(&root) {
-            value.additional.push(root);
+    #[cfg(unix)]
+    {
+        let anchor = StoreAnchor::open(path)?;
+        let lock = anchor.open_lock()?;
+        FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+        let mut value = read_unlocked(&anchor)?;
+        if value.revision != expected {
+            return Err("Workspace revision conflict".into());
         }
-    } else {
-        value.additional.retain(|entry| entry != &root);
+        if root == value.primary {
+            return Err("Primary root is immutable".into());
+        }
+        let before = value.additional.clone();
+        if add {
+            if !value.additional.contains(&root) {
+                value.additional.push(root);
+            }
+        } else {
+            value.additional.retain(|entry| entry != &root);
+        }
+        value.additional.sort();
+        if value.additional != before {
+            reject_store_in_roots(&anchor.store_display_path(), &value)?;
+            value.revision = value.revision.checked_add(1).ok_or("Revision overflow")?;
+            atomic_save(&anchor, &value)?;
+        }
+        let _ = FileExt::unlock(&lock);
+        Ok(value)
     }
-    value.additional.sort();
-    if value.additional != before {
-        reject_store_in_roots(path, &value)?;
-        value.revision = value.revision.checked_add(1).ok_or("Revision overflow")?;
-        atomic_save(path, &value)?;
+    #[cfg(not(unix))]
+    {
+        let lock = private_options()
+            .create(true)
+            .open(path.with_extension("lock"))
+            .map_err(|e| e.to_string())?;
+        FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+        let mut value = read_unlocked(path)?;
+        if value.revision != expected {
+            return Err("Workspace revision conflict".into());
+        }
+        if root == value.primary {
+            return Err("Primary root is immutable".into());
+        }
+        let before = value.additional.clone();
+        if add {
+            if !value.additional.contains(&root) {
+                value.additional.push(root);
+            }
+        } else {
+            value.additional.retain(|entry| entry != &root);
+        }
+        value.additional.sort();
+        if value.additional != before {
+            reject_store_in_roots(path, &value)?;
+            value.revision = value.revision.checked_add(1).ok_or("Revision overflow")?;
+            atomic_save(path, &value)?;
+        }
+        let _ = FileExt::unlock(&lock);
+        Ok(value)
     }
-    let _ = FileExt::unlock(&lock);
-    Ok(value)
 }
 
 pub(crate) fn initialized_store(path: &Path, primary: &str) -> Result<(), String> {
     let primary = validate_root(primary)?;
-    validate_store_path(path)?;
-    let lock = acquire_lock_file(path)?;
-    FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
-    if path.exists() {
-        return Err("Workspace already exists".into());
+    #[cfg(unix)]
+    {
+        let anchor = StoreAnchor::open(path)?;
+        let lock = anchor.open_lock()?;
+        FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+        let value = StoredWorkspace {
+            id: uuid::Uuid::new_v4().to_string(),
+            revision: 1,
+            primary,
+            additional: vec![],
+        };
+        reject_store_in_roots(&anchor.store_display_path(), &value)?;
+        let mut file = anchor.create_store().map_err(|e| {
+            if e.contains("File exists") {
+                "Workspace already exists".to_string()
+            } else {
+                e
+            }
+        })?;
+        file.write_all(&serde_json::to_vec(&value).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        anchor.sync_dir()?;
+        let _ = FileExt::unlock(&lock);
+        Ok(())
     }
-    let value = StoredWorkspace {
-        id: uuid::Uuid::new_v4().to_string(),
-        revision: 1,
-        primary,
-        additional: vec![],
-    };
-    reject_store_in_roots(path, &value)?;
-    // Exclusive file creation prevents accidentally clobbering another owner.
-    let mut file = private_options()
-        .create_new(true)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    file.write_all(&serde_json::to_vec(&value).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    sync_parent(path)?;
-    let _ = FileExt::unlock(&lock);
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        validate_store_path(path)?;
+        if path.exists() {
+            return Err("Workspace already exists".into());
+        }
+        let value = StoredWorkspace {
+            id: uuid::Uuid::new_v4().to_string(),
+            revision: 1,
+            primary,
+            additional: vec![],
+        };
+        reject_store_in_roots(path, &value)?;
+        let mut file = private_options()
+            .create_new(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(&serde_json::to_vec(&value).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        sync_parent(path)?;
+        Ok(())
+    }
 }

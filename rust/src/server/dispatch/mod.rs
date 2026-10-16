@@ -267,7 +267,7 @@ impl LeanCtxServer {
                 pressure_snapshot,
                 path_errors,
                 bm25_cache: Some(self.bm25_cache.clone()),
-                progress_sender: Some(self.progress_sender.clone()),
+                progress_sender: Some(crate::server::progress::current_shared_sender()),
                 // #1781: the request's cancellation token, scoped per request by
                 // `call_tool`. `try_with` yields `None` outside such a scope —
                 // unit tests and internal dispatch paths — which leaves their

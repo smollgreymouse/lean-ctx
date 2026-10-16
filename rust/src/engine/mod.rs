@@ -5,7 +5,8 @@ use anyhow::{Context, Result, anyhow};
 use rmcp::{
     model::{
         CallToolRequest, CallToolRequestParams, CallToolResult, ClientJsonRpcMessage,
-        ClientRequest, JsonRpcRequest, NumberOrString, ServerJsonRpcMessage, ServerResult,
+        ClientRequest, GetMeta, JsonRpcRequest, NumberOrString, ProgressToken,
+        ServerJsonRpcMessage, ServerResult,
     },
     service::RoleServer,
     service::serve_directly,
@@ -105,6 +106,60 @@ impl ContextEngine {
                 }
                 ServerJsonRpcMessage::Request(_) => {
                     return Err(anyhow!("unexpected request"));
+                }
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) async fn call_tool_trace(
+        &self,
+        name: &str,
+        arguments: Option<Value>,
+        progress_token: &str,
+    ) -> Result<(CallToolResult, Vec<String>)> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let req_id = NumberOrString::Number(id);
+        let args_obj: Map<String, Value> = match arguments {
+            None => Map::new(),
+            Some(Value::Object(m)) => m,
+            Some(other) => {
+                return Err(anyhow!(
+                    "tool arguments must be a JSON object (got {other})"
+                ));
+            }
+        };
+        let params = CallToolRequestParams::new(name.to_string()).with_arguments(args_obj);
+        let mut request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        request
+            .get_meta_mut()
+            .set_progress_token(ProgressToken(NumberOrString::String(
+                progress_token.to_string().into(),
+            )));
+        let msg = ClientJsonRpcMessage::Request(JsonRpcRequest::new(req_id, request));
+        let (transport, mut rx) = OneshotTransport::<RoleServer>::new(msg);
+        let service = serve_directly(self.server.clone(), transport, None);
+        tokio::spawn(async move {
+            let _ = service.waiting().await;
+        });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut notifications = Vec::new();
+        loop {
+            let server_msg = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .map_err(|_| anyhow!("tool trace timed out"))?
+                .ok_or_else(|| anyhow!("tool trace channel closed"))?;
+            match server_msg {
+                ServerJsonRpcMessage::Notification(n) => notifications.push(format!("{n:?}")),
+                ServerJsonRpcMessage::Response(r) => {
+                    return match r.result {
+                        ServerResult::CallToolResult(result) => Ok((result, notifications)),
+                        other => Err(anyhow!("unexpected server result: {other:?}")),
+                    };
+                }
+                ServerJsonRpcMessage::Error(e) => return Err(anyhow!("{e:?}")),
+                ServerJsonRpcMessage::Request(_) => {
+                    return Err(anyhow!("unexpected server request"));
                 }
             }
         }
