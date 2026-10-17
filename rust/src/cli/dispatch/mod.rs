@@ -49,6 +49,11 @@ pub fn run() {
         }
     }
 
+    if args.get(1).map(String::as_str) == Some("workspace-admin") {
+        let code = crate::cli::workspace_admin::run(&args[2..]);
+        std::process::exit(code);
+    }
+
     if !is_server_mode(&args) {
         restore_sigpipe_default();
     }
