@@ -86,7 +86,14 @@ pub(super) fn run_mcp_server() -> Result<()> {
         .enable_all()
         .build()?;
 
-    let mut server = tools::create_server();
+    let mut server = if let Some(store_path) = std::env::var_os("LEAN_CTX_WORKSPACE_FILE") {
+        let store_path = std::path::PathBuf::from(store_path);
+        let store =
+            crate::server::workspace_store::load(&store_path).map_err(anyhow::Error::msg)?;
+        tools::LeanCtxServer::new_with_project_root(Some(&store.primary))
+    } else {
+        tools::create_server()
+    };
     server.native_receipt_authority = receipt_host;
     drop(startup_lock);
 
