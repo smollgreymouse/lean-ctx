@@ -116,6 +116,8 @@ impl McpTool for CtxSemanticSearchTool {
         };
 
         send_progress(0.0, "Starting search...");
+        #[cfg(debug_assertions)]
+        crate::server::workspace_test_hooks::hit("progress_after_start");
 
         let result = if action == "reindex" {
             send_progress(0.0, "Rebuilding BM25 index...");

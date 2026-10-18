@@ -267,7 +267,7 @@ impl LeanCtxServer {
                 pressure_snapshot,
                 path_errors,
                 bm25_cache: Some(self.bm25_cache.clone()),
-                progress_sender: Some(self.progress_sender.clone()),
+                progress_sender: Some(crate::server::progress::current_shared_sender()),
                 // #1781: the request's cancellation token, scoped per request by
                 // `call_tool`. `try_with` yields `None` outside such a scope —
                 // unit tests and internal dispatch paths — which leaves their
@@ -544,6 +544,13 @@ impl LeanCtxServer {
             .or_else(|| {
                 (!ctx.project_root.is_empty()).then(|| std::path::PathBuf::from(&ctx.project_root))
             });
+        let policy_workspace = crate::core::policy::runtime::REQUEST_WORKSPACE
+            .try_with(|value| value.clone())
+            .ok()
+            .flatten();
+        let policy_search_roots = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+            .try_with(|slot| slot.borrow().clone())
+            .unwrap_or_default();
         let join = tokio::task::spawn_blocking(move || {
             let handle = || {
                 crate::core::archive::authority::CAPTURE.sync_scope(archive_capture, || {
@@ -551,7 +558,13 @@ impl LeanCtxServer {
                         crate::server::native_receipts::NATIVE_RECEIPT_CAPTURE.sync_scope(
                             receipt_capture,
                             || {
-                                crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
+                                crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(
+                    policy_workspace,
+                    || {
+                crate::core::policy::runtime::REQUEST_SEARCH_ROOTS.sync_scope(
+                                    std::cell::RefCell::new(policy_search_roots),
+                                    || {
+                                        crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
                                     std::cell::RefCell::new(policy_project),
                                     || {
                                         crate::core::context_kernel::bridge::runtime::KERNEL_PLANNING_HANDOFF
@@ -563,6 +576,10 @@ impl LeanCtxServer {
                                             })
                                     },
                                 )
+                                    },
+                                )
+                    },
+                )
                             },
                         )
                     })

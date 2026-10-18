@@ -37,9 +37,22 @@ pub(super) fn fresh_index(
         .ok_or("source authority unavailable")?
         .canonicalize()
         .map_err(|_| "source authority unavailable")?;
-    if !root.starts_with(&authority) {
+    // The primary request project is always authorized. Additional search roots
+    // are admitted only from the session-scoped MCP authority, never allow_paths.
+    let additional_authorized = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+        .try_with(|slot| {
+            slot.borrow().iter().any(|candidate| {
+                candidate
+                    .canonicalize()
+                    .is_ok_and(|allowed| allowed.is_dir() && root.starts_with(&allowed))
+            })
+        })
+        .unwrap_or(false);
+    if !root.starts_with(&authority) && !additional_authorized {
         return Err("source root is outside the request authority".into());
     }
+    #[cfg(debug_assertions)]
+    crate::server::workspace_test_hooks::hit("bm25_after_authority_check");
     // lean-ctx: bounded synchronous fresh view; replace with a digest- and
     // authority-bound admitted cache only when that cache has equivalent proof.
     let mut remaining = 64 * 1024 * 1024usize;
@@ -53,6 +66,8 @@ pub(super) fn fresh_index(
         if remaining < 2 * 1024 * 1024 {
             return Err("source byte budget exceeded; narrow the search scope".into());
         }
+        #[cfg(debug_assertions)]
+        crate::server::workspace_test_hooks::hit("bm25_before_source_read");
         let initial = remaining.min(2 * 1024 * 1024);
         let mut allowance = initial;
         let content = crate::tools::ctx_read::read_file_for_tool_rooted_budgeted(
@@ -62,6 +77,8 @@ pub(super) fn fresh_index(
             &mut allowance,
         );
         remaining = remaining.saturating_sub(initial.saturating_sub(allowance));
+        #[cfg(debug_assertions)]
+        crate::server::workspace_test_hooks::hit("bm25_after_source_read");
         // Denied, unreadable and non-text sources contribute neither documents
         // nor term frequencies, snippets or names to the retrieval view.
         Ok(content.ok())

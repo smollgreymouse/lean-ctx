@@ -224,35 +224,150 @@ impl LeanCtxServer {
             .project_root
             .as_ref()
             .map(std::path::PathBuf::from);
-        crate::core::policy::runtime::REQUEST_PROJECT
-            .scope(std::cell::RefCell::new(project), async {
-                // Establish client-root authority before early receipt/identity
-                // checks can return, as well as before lifecycle replay lookup.
-                self.resolve_roots_once().await;
-                let project = self.session.read().await.project_root.clone();
-                crate::core::policy::runtime::bind_request_project(project.as_deref());
-                // One Decision Receipt per call: every admission inside this
-                // call (handler and its read workers) lands in this capture.
-                let admissions = crate::core::context_admission::capture::AdmissionCapture::new();
-                let tool_name = request.name.to_string();
-                let result = crate::core::context_admission::capture::ADMISSIONS
-                    .scope(
-                        Some(admissions.clone()),
-                        self.call_tool_guarded_scoped(request),
-                    )
-                    .await;
-                self.finish_gateway_receipt(admissions, &result, &tool_name)
-                    .await;
-                result.map_err(|error| {
-                    if crate::core::policy::runtime::is_active() {
-                        ErrorData::internal_error(
-                            "Tool request failed under the current policy",
-                            None,
-                        )
-                    } else {
-                        error
-                    }
-                })
+        crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+            .scope(std::cell::RefCell::new(Vec::new()), async {
+                crate::core::policy::runtime::REQUEST_PROJECT
+                    .scope(std::cell::RefCell::new(project), async {
+                        // Establish client-root authority before early receipt/identity
+                        // checks can return, as well as before lifecycle replay lookup.
+                        self.resolve_roots_once().await;
+                        let project = self.session.read().await.project_root.clone();
+                        crate::core::policy::runtime::bind_request_project(project.as_deref());
+                        // The extra roots are resolved for THIS session, not process-wide.
+                        // Do not elevate allow_paths to search authority.
+                        let search_roots = self.session.read().await.extra_roots.clone();
+                        crate::core::policy::runtime::bind_request_search_roots(&search_roots);
+                        // Strict isolation is opt-in until the Workspace API binds
+                        // authenticated workspace identities. Legacy launchers keep
+                        // their existing allow_paths semantics unchanged.
+                        let strict =
+                            std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
+                        let snapshot = if strict && self.workspace_store_path.is_some() {
+                            let state = self.session.read().await;
+                            let store = self
+                                .workspace_store_path
+                                .as_deref()
+                                .and_then(|path| crate::server::workspace_store::load(path).ok());
+                            store.and_then(|store| {
+                                let primary =
+                                    std::path::PathBuf::from(state.project_root.as_ref()?)
+                                        .canonicalize()
+                                        .ok()?;
+                                if primary.to_string_lossy() != store.primary {
+                                    return None;
+                                }
+                                Some(crate::core::policy::runtime::WorkspaceSnapshot {
+                                    workspace_id: Some(store.id.clone()),
+                                    primary_root: primary,
+                                    additional_roots: store
+                                        .additional
+                                        .into_iter()
+                                        .map(std::path::PathBuf::from)
+                                        .collect(),
+                                    revision: store.revision,
+                                })
+                            })
+                        } else if strict {
+                            let state = self.session.read().await;
+                            state.project_root.as_ref().and_then(|root| {
+                                let primary_root =
+                                    std::path::PathBuf::from(root).canonicalize().ok()?;
+                                if !primary_root.is_dir()
+                                    || crate::core::pathutil::is_broad_or_unsafe_root(&primary_root)
+                                {
+                                    return None;
+                                }
+                                // Never promote the process-global config/env extra_roots
+                                // or persisted session extras into strict authority.
+                                let additional_roots = state
+                                    .client_workspace_roots
+                                    .iter()
+                                    .filter_map(|p| {
+                                        let p = std::path::PathBuf::from(p).canonicalize().ok()?;
+                                        (p.is_dir()
+                                            && !crate::core::pathutil::is_broad_or_unsafe_root(&p)
+                                            && p != primary_root)
+                                            .then_some(p)
+                                    })
+                                    .collect();
+                                Some(crate::core::policy::runtime::WorkspaceSnapshot {
+                                    workspace_id: None,
+                                    primary_root,
+                                    additional_roots,
+                                    revision: 0,
+                                })
+                            })
+                        } else {
+                            None
+                        };
+                        if strict && snapshot.is_none() {
+                            return Err(ErrorData::internal_error(
+                                "Strict workspace authority unavailable",
+                                None,
+                            ));
+                        }
+                        if let Some(ref snapshot) = snapshot {
+                            let strict_roots: Vec<String> = snapshot
+                                .additional_roots
+                                .iter()
+                                .map(|path| path.to_string_lossy().into_owned())
+                                .collect();
+                            crate::core::policy::runtime::bind_request_search_roots(&strict_roots);
+                        }
+                        // One Decision Receipt per call: every admission inside this
+                        // call (handler and its read workers) lands in this capture.
+                        let admissions =
+                            crate::core::context_admission::capture::AdmissionCapture::new();
+                        let tool_name = request.name.to_string();
+                        let expected_revision = snapshot.as_ref().map(|s| s.revision);
+                        let result = crate::core::context_admission::capture::ADMISSIONS
+                            .scope(
+                                Some(admissions.clone()),
+                                crate::core::policy::runtime::REQUEST_WORKSPACE
+                                    .scope(snapshot, self.call_tool_guarded_scoped(request)),
+                            )
+                            .await;
+                        // Debug-only deterministic race gate for the isolated MCP
+                        // revocation integration test. Never compiled in release.
+                        #[cfg(debug_assertions)]
+                        if tool_name == "ctx_search"
+                            && self.workspace_store_path.is_some()
+                            && let Ok(marker) = std::env::var("LEAN_CTX_TEST_REVOCATION_MARKER")
+                        {
+                            let _ = std::fs::write(marker, b"ready");
+                            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                        }
+                        // Revocation publication fence: never deliver a result
+                        // produced with an old workspace revision. Also fail closed
+                        // if the backing store disappears or becomes invalid.
+                        if self.workspace_store_path.is_some() {
+                            let current = crate::server::workspace_store::load(
+                                self.workspace_store_path.as_deref().expect("checked"),
+                            )
+                            .map_err(|_| {
+                                ErrorData::internal_error("Workspace authority revoked", None)
+                            })?;
+                            if expected_revision != Some(current.revision) {
+                                return Err(ErrorData::internal_error(
+                                    "Workspace changed during request",
+                                    None,
+                                ));
+                            }
+                        }
+                        self.finish_gateway_receipt(admissions, &result, &tool_name)
+                            .await;
+                        result.map_err(|error| {
+                            if crate::core::policy::runtime::is_active() {
+                                ErrorData::internal_error(
+                                    "Tool request failed under the current policy",
+                                    None,
+                                )
+                            } else {
+                                error
+                            }
+                        })
+                    })
+                    .await
             })
             .await
     }
@@ -666,9 +781,14 @@ impl LeanCtxServer {
             .unwrap_or_default();
         // A cached answer is egress too: never served while a policy pack or
         // the sensitivity floor could withhold what it contains.
-        let cache_key = cache_allowed_for_current_egress(&config)
-            .then(|| response_cache_key(name, args, &project_root))
-            .flatten();
+        // A process-global cache keyed only by primary root and arguments is
+        // unsafe for different workspaces with different attached roots.
+        // Fail closed until cache keys include verified workspace identity
+        // AND revision and stale responses are fenced on revocation.
+        let cache_key = (std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() != Ok("1")
+            && cache_allowed_for_current_egress(&config))
+        .then(|| response_cache_key(name, args, &project_root))
+        .flatten();
         let call_start = std::time::Instant::now();
         if let Some(cached) = cache_key
             .as_ref()

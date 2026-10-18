@@ -88,6 +88,9 @@ impl InteractionMode {
 pub struct LeanCtxServer {
     pub cache: SharedCache,
     pub session: Arc<RwLock<SessionState>>,
+    pub(crate) workspace_registry: crate::server::workspace_registry::SharedWorkspaceRegistry,
+    /// Bound at construction by the trusted launcher, never selected by a tool.
+    pub(crate) workspace_store_path: Option<std::path::PathBuf>,
     pub tool_calls: Arc<RwLock<Vec<ToolCallRecord>>>,
     pub call_count: Arc<AtomicUsize>,
     /// Every tool call, counted unconditionally at the top of
@@ -141,7 +144,6 @@ pub struct LeanCtxServer {
     pub(crate) roots_list_attempts: Arc<std::sync::atomic::AtomicU32>,
     pub(crate) bm25_cache: Arc<std::sync::Mutex<Option<crate::core::bm25_cache::Bm25CacheEntry>>>,
     pub(crate) _eviction_target: Arc<crate::core::eviction_orchestrator::EvictionOrchestrator>,
-    pub(crate) progress_sender: crate::server::progress::SharedProgressSender,
     pub(crate) last_tools_config_hash: Arc<std::sync::atomic::AtomicU64>,
     /// Current IDE interaction mode (Agent/Plan). Updated from `_meta.interactionMode`
     /// on each tool call; controls tool visibility and destructive-tool guards.
