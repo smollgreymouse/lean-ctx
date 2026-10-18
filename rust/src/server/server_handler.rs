@@ -61,6 +61,37 @@ fn suppress_initialize_instructions(client_id: &str) -> bool {
 
     cfg.declines_rule_steering() || matches!(client_id, "antigravity" | "gemini-cli")
 }
+
+const STRICT_WORKSPACE_LEGACY_TOOLS_ENV: &str = "LEAN_CTX_STRICT_WORKSPACE_LEGACY_TOOLS";
+
+/// Harr can opt into the pre-Workspace tool surface while retaining the
+/// request-scoped Workspace authority/root model. Upstream strict mode remains
+/// conservative by default; the compatibility flag is explicit and local to
+/// the launcher.
+pub(crate) fn strict_workspace_legacy_tools_enabled() -> bool {
+    std::env::var(STRICT_WORKSPACE_LEGACY_TOOLS_ENV).as_deref() == Ok("1")
+}
+
+fn strict_workspace_tool_allowed(name: &str) -> bool {
+    if strict_workspace_legacy_tools_enabled()
+        && matches!(
+            name,
+            "ctx_call" | "ctx_glob" | "ctx_read" | "ctx_search" | "ctx_shell" | "ctx_tools"
+        )
+    {
+        return true;
+    }
+    matches!(
+        name,
+        "ctx_read"
+            | "ctx_tree"
+            | "ctx_search"
+            | "ctx_workspace_get"
+            | "ctx_workspace_list"
+            | "ctx_workspace_diagnose"
+    )
+}
+
 impl ServerHandler for LeanCtxServer {
     fn get_info(&self) -> ServerInfo {
         let capabilities = server_capabilities(true, true);
@@ -119,7 +150,15 @@ impl ServerHandler for LeanCtxServer {
             .unwrap_or_default();
         {
             let mut session = self.session.write().await;
-            if !cwd_str.is_empty() {
+            let strict_workspace = self.workspace_store_path.is_some()
+                && std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
+            if strict_workspace {
+                // Never seed ctx_shell from the MCP process CWD under strict
+                // authority: the daemon may have been launched from HOME or a
+                // sibling checkout. Start at the trusted primary; explicit cwd
+                // requests still pass through the request-scoped Workspace jail.
+                session.shell_cwd = effective_root.clone();
+            } else if !cwd_str.is_empty() {
                 session.shell_cwd = Some(cwd_str.clone());
             }
             if let Some(ref root) = effective_root {
@@ -586,8 +625,10 @@ impl ServerHandler for LeanCtxServer {
             };
 
             let tools = if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1") {
-                tools.into_iter().filter(|tool| matches!(tool.name.as_ref(),
-                    "ctx_read" | "ctx_tree" | "ctx_search")).collect()
+                tools
+                    .into_iter()
+                    .filter(|tool| strict_workspace_tool_allowed(tool.name.as_ref()))
+                    .collect()
             } else { tools };
 
             // Read-only workspace diagnostics: explicitly opt-in until workspace
@@ -710,15 +751,7 @@ impl ServerHandler for LeanCtxServer {
         // arbitrary edits or specialized readers that do not honor PathJail.
         // These can be re-enabled only after an explicit source-admission audit.
         if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1")
-            && !matches!(
-                request.name.as_ref(),
-                "ctx_read"
-                    | "ctx_tree"
-                    | "ctx_search"
-                    | "ctx_workspace_get"
-                    | "ctx_workspace_list"
-                    | "ctx_workspace_diagnose"
-            )
+            && !strict_workspace_tool_allowed(request.name.as_ref())
         {
             return Err(ErrorData::invalid_params(
                 "Tool unavailable in strict Workspace mode",
@@ -917,6 +950,33 @@ fn startup_rule_maintenance_at_home(home: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_workspace_legacy_tool_surface_is_explicit_opt_in() {
+        let _guard = crate::core::data_dir::test_env_lock();
+        let _unset = crate::setup::EnvVarGuard::remove(STRICT_WORKSPACE_LEGACY_TOOLS_ENV);
+        assert!(strict_workspace_tool_allowed("ctx_read"));
+        assert!(!strict_workspace_tool_allowed("ctx_glob"));
+        assert!(!strict_workspace_tool_allowed("ctx_shell"));
+        assert!(!strict_workspace_tool_allowed("ctx_tools"));
+        assert!(!strict_workspace_tool_allowed("ctx_call"));
+        drop(_unset);
+
+        let _enabled = crate::setup::EnvVarGuard::set(STRICT_WORKSPACE_LEGACY_TOOLS_ENV, "1");
+        for tool in [
+            "ctx_call",
+            "ctx_glob",
+            "ctx_read",
+            "ctx_search",
+            "ctx_shell",
+            "ctx_tools",
+        ] {
+            assert!(
+                strict_workspace_tool_allowed(tool),
+                "legacy Harr surface must include {tool}"
+            );
+        }
+    }
 
     #[test]
     fn initialize_instructions_respect_explicit_auto_inject_false() {
