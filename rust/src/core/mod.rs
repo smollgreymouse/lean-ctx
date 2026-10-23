@@ -396,6 +396,8 @@ pub mod edit_metering;
 pub(crate) mod edit_quality;
 pub(crate) mod efficacy;
 pub mod evidence_bundle;
+#[allow(dead_code)]
+pub(crate) mod git_checkout;
 pub mod grammar_usage;
 pub(crate) mod graph_cache;
 pub(crate) mod http_client;

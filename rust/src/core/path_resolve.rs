@@ -14,26 +14,6 @@ use std::path::{Path, PathBuf};
 /// path resolution have a local, discoverable handle.
 pub use crate::core::pathutil::has_project_marker;
 
-/// Nearest ancestor (including `start` itself) containing a `.git` entry —
-/// directory (normal checkout) **or file** (linked worktree: `gitdir: …`),
-/// canonicalized for comparison. `None` when no git boundary exists upward.
-///
-/// Deliberately `.git`-only, NOT [`has_project_marker`]: markers like
-/// `Cargo.toml` exist in nested monorepo subdirectories (`rust/Cargo.toml`
-/// in this very repo), so using them here would make a plain `cd rust/` look
-/// like a checkout switch (#707).
-fn nearest_git_boundary(start: &Path) -> Option<PathBuf> {
-    let start = crate::core::pathutil::safe_canonicalize_or_self(start);
-    let mut cur: Option<&Path> = Some(start.as_path());
-    while let Some(dir) = cur {
-        if dir.join(".git").exists() {
-            return Some(dir.to_path_buf());
-        }
-        cur = dir.parent();
-    }
-    None
-}
-
 /// True when `shell_cwd` lives in a DIFFERENT git checkout than
 /// `project_root` (#707): both sides resolve to a `.git` boundary and the
 /// boundaries differ. This is the worktree signal — Claude Code's
@@ -46,10 +26,39 @@ pub(crate) fn shell_cwd_is_divergent_checkout(project_root: &str, shell_cwd: &st
     if shell_cwd == project_root {
         return false;
     }
-    match (
-        nearest_git_boundary(Path::new(shell_cwd)),
-        nearest_git_boundary(Path::new(project_root)),
-    ) {
+
+    // Keep this hot path filesystem-only. Full Git checkout discovery is used
+    // for identity/topology operations, not every file path resolution.
+    //
+    // Only consider a .git boundary at or below the paths' common ancestor.
+    // This prevents an unrelated ambient parent repository (for example a
+    // developer accidentally having /tmp/.git) from turning a gitless sibling
+    // directory into a checkout switch.
+    let project = crate::core::pathutil::safe_canonicalize_or_self(Path::new(project_root));
+    let cwd = crate::core::pathutil::safe_canonicalize_or_self(Path::new(shell_cwd));
+    let common = project
+        .ancestors()
+        .find(|ancestor| cwd.starts_with(ancestor))
+        .map(Path::to_path_buf);
+
+    let relevant_boundary = |path: &Path| {
+        let boundary = crate::core::git_checkout::nearest_checkout_root(path)?;
+        if let Some(common) = common.as_ref() {
+            if !boundary.starts_with(common) {
+                return None;
+            }
+            // A .git entry exactly at the shared ancestor is only meaningful
+            // when this path itself is that checkout root. Otherwise it is an
+            // ambient parent repository, not evidence that a sibling scratch
+            // directory is a checkout.
+            if boundary == *common && path != common {
+                return None;
+            }
+        }
+        Some(boundary)
+    };
+
+    match (relevant_boundary(&cwd), relevant_boundary(&project)) {
         (Some(cwd_git), Some(root_git)) => cwd_git != root_git,
         _ => false,
     }
@@ -352,6 +361,23 @@ mod tests {
         fs::create_dir_all(repo.join(".git")).unwrap();
         fs::create_dir_all(&scratch).unwrap();
         fs::write(repo.join("a.txt"), "root").unwrap();
+
+        assert!(!shell_cwd_is_divergent_checkout(
+            &repo.to_string_lossy(),
+            &scratch.to_string_lossy(),
+        ));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn ambient_parent_git_boundary_does_not_make_scratch_a_checkout() {
+        let base = std::env::temp_dir().join(format!("lc_707_ambient_{}", std::process::id()));
+        let repo = base.join("repo");
+        let scratch = base.join("scratch");
+        fs::create_dir_all(base.join(".git")).unwrap();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(&scratch).unwrap();
 
         assert!(!shell_cwd_is_divergent_checkout(
             &repo.to_string_lossy(),
