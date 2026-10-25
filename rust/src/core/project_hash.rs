@@ -157,33 +157,28 @@ fn explicit_identity_file(root: &Path) -> Option<String> {
 }
 
 fn git_remote_url(root: &Path) -> Option<String> {
+    // Keep the existing zero-process fast path for normal checkouts and
+    // synthetic fixtures.
     let config = root.join(".git").join("config");
-    let content = std::fs::read_to_string(config).ok()?;
-
-    let mut in_origin = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_origin = trimmed == r#"[remote "origin"]"#;
-            continue;
-        }
-        if in_origin && let Some(url) = trimmed.strip_prefix("url") {
-            let url = url.trim_start_matches([' ', '=']);
-            let url = url.trim();
-            if !url.is_empty() {
-                return Some(normalize_git_url(url));
-            }
-        }
+    if let Some(url) = crate::core::git_checkout::origin_remote_url_from_config(&config) {
+        return Some(url);
     }
+
+    // In a linked worktree .git is a file, so the repository config lives
+    // under git-common-dir. Canonical checkout discovery resolves that safely.
+    if root.join(".git").is_file()
+        && let Ok(Some(checkout)) = crate::core::git_checkout::discover_checkout(root)
+        && let Some(identity) = checkout.repository.portable_identity
+    {
+        return identity.strip_prefix("git:").map(str::to_string);
+    }
+
     None
 }
 
+#[cfg(test)]
 fn normalize_git_url(url: &str) -> String {
-    let url = url.trim_end_matches(".git");
-    let url = url
-        .strip_prefix("git@")
-        .map_or_else(|| url.to_string(), |s| s.replacen(':', "/", 1));
-    url.to_lowercase()
+    crate::core::git_checkout::normalize_remote_url(url)
 }
 
 fn cargo_package_name(root: &Path) -> Option<String> {
@@ -716,5 +711,59 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         assert!(verify_ownership(&dir, "/workspace"));
+    }
+
+    #[test]
+    fn project_identity_reads_origin_from_linked_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let wt = tmp.path().join("linked");
+
+        let git = |cwd: &Path, args: &[&str]| {
+            let mut command = std::process::Command::new("git");
+            command
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env(
+                    "GIT_CONFIG_GLOBAL",
+                    if cfg!(windows) { "NUL" } else { "/dev/null" },
+                )
+                .env("GIT_TERMINAL_PROMPT", "0");
+            let output = command
+                .output()
+                .expect("git available for repository tests");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        git(tmp.path(), &["init", main.to_str().unwrap()]);
+        git(&main, &["config", "user.email", "test@example.invalid"]);
+        git(&main, &["config", "user.name", "LeanCTX Test"]);
+        fs::write(main.join("file.txt"), "x\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "-m", "initial"]);
+        git(
+            &main,
+            &["remote", "add", "origin", "git@github.com:User/My-Repo.git"],
+        );
+        git(&main, &["branch", "linked-branch"]);
+        git(
+            &main,
+            &["worktree", "add", wt.to_str().unwrap(), "linked-branch"],
+        );
+
+        assert!(
+            wt.join(".git").is_file(),
+            "fixture must be a linked worktree"
+        );
+        assert_eq!(
+            project_identity(wt.to_str().unwrap()),
+            Some("git:github.com/user/my-repo".into())
+        );
     }
 }
