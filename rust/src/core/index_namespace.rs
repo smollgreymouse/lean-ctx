@@ -9,7 +9,11 @@ pub(crate) fn vectors_dir(project_root: &Path) -> PathBuf {
     if let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() {
         let old_dir = data_dir.join("vectors").join(&legacy);
         let new_dir = data_dir.join("vectors").join(&hash);
-        migrate_dir_if_needed(&old_dir, &new_dir);
+        // Never migrate a root-only legacy dense corpus into a strict Workspace
+        // namespace: its source authority cannot be reconstructed safely.
+        if !workspace_namespace_active() {
+            migrate_dir_if_needed(&old_dir, &new_dir);
+        }
         return new_dir;
     }
 
@@ -28,12 +32,22 @@ fn namespace_seed(project_root: &Path) -> String {
     let base = crate::core::project_hash::project_identity(&root_s)
         .unwrap_or_else(|| crate::core::graph_index::normalize_project_root(&root_s));
 
+    let authority_suffix = crate::core::policy::runtime::REQUEST_WORKSPACE
+        .try_with(|snapshot| snapshot.clone())
+        .ok()
+        .flatten()
+        .and_then(|snapshot| {
+            snapshot
+                .workspace_id
+                .map(|id| format!("|workspace:{id}|revision:{}", snapshot.revision))
+        })
+        .unwrap_or_default();
     if !branch_aware_enabled() {
-        return base;
+        return format!("{base}{authority_suffix}");
     }
 
     let branch = git_branch(project_root).unwrap_or_else(|| "HEAD".to_string());
-    format!("{base}|branch:{branch}")
+    format!("{base}|branch:{branch}{authority_suffix}")
 }
 
 fn branch_aware_enabled() -> bool {
@@ -60,6 +74,17 @@ fn git_branch(project_root: &Path) -> Option<String> {
     let s = String::from_utf8(out.stdout).ok()?;
     let s = s.trim().to_string();
     if s.is_empty() { None } else { Some(s) }
+}
+
+fn workspace_namespace_active() -> bool {
+    crate::core::policy::runtime::REQUEST_WORKSPACE
+        .try_with(|snapshot| {
+            snapshot
+                .as_ref()
+                .and_then(|s| s.workspace_id.as_ref())
+                .is_some()
+        })
+        .unwrap_or(false)
 }
 
 fn legacy_vectors_hash(project_root: &Path) -> String {

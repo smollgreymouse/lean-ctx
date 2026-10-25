@@ -547,7 +547,11 @@ pub fn jail_path_with_roots(
     #[allow(unreachable_code)]
     {
         let cfg = crate::core::config::Config::load();
-        if cfg.path_jail == Some(false) {
+        if cfg.path_jail == Some(false)
+            && !crate::core::policy::runtime::REQUEST_WORKSPACE
+                .try_with(|snapshot| snapshot.is_some())
+                .unwrap_or(false)
+        {
             return Ok(canonicalize_or_self(candidate));
         }
 
@@ -565,28 +569,44 @@ pub fn jail_path_with_roots(
             resolved.as_path()
         };
 
-        let mut allow = allow_paths_from_env_and_config();
+        let strict_workspace = crate::core::policy::runtime::REQUEST_WORKSPACE
+            .try_with(|snapshot| snapshot.clone())
+            .ok()
+            .flatten();
+        let mut allow = if let Some(ref workspace) = strict_workspace {
+            // Under strict session authority, global allow_paths and extra_roots
+            // MUST NOT leak between clients sharing one MCP process.
+            workspace.additional_roots.clone()
+        } else {
+            allow_paths_from_env_and_config()
+        };
         // Session-scoped roots widen the allow-list for this call only.
-        allow.extend(
-            extra_roots
-                .iter()
-                .filter(|r| !r.is_empty())
-                .map(|r| canonicalize_secure(Path::new(r))),
-        );
+        if strict_workspace.is_none() {
+            allow.extend(
+                extra_roots
+                    .iter()
+                    .filter(|r| !r.is_empty())
+                    .map(|r| canonicalize_secure(Path::new(r))),
+            );
+        }
 
         // #820: lean-ctx's own state dir (tee files, artifacts, tool-results)
         // must be readable even when outside the project root. ctx_shell
         // tells agents to read tee-file paths, so the jail must allow them.
-        if let Ok(state) = crate::core::paths::state_dir() {
-            allow.push(canonicalize_secure(&state));
+        if strict_workspace.is_none() {
+            if let Ok(state) = crate::core::paths::state_dir() {
+                allow.push(canonicalize_secure(&state));
+            }
         }
         // Read-only roots are also allowed for reads (they only block writes
         // via enforce_writable, not reads via the jail).
-        allow.extend(
-            read_only_roots_from_env_and_config()
-                .into_iter()
-                .map(|p| canonicalize_secure(&p)),
-        );
+        if strict_workspace.is_none() {
+            allow.extend(
+                read_only_roots_from_env_and_config()
+                    .into_iter()
+                    .map(|p| canonicalize_secure(&p)),
+            );
+        }
 
         let (base, remainder) = canonicalize_existing_ancestor(candidate).ok_or_else(|| {
             PathJailError::NoExistingAncestor {
@@ -785,6 +805,123 @@ mod windows_prefix_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "no-jail"))]
+    #[test]
+    fn concurrent_workspace_snapshots_are_thread_isolated() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let temp = tempfile::tempdir().expect("fixture");
+        let a = temp.path().join("repo-a");
+        let b = temp.path().join("repo-b");
+        let c = temp.path().join("repo-c");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("marker.txt"), b"marker").unwrap();
+        }
+        let primary_a = a.canonicalize().unwrap();
+        let root_b = b.canonicalize().unwrap();
+        let primary_c = c.canonicalize().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            let b1 = barrier.clone();
+            let a1 = primary_a.clone();
+            let b_root1 = root_b.clone();
+            let c1 = primary_c.clone();
+            let first = scope.spawn(move || {
+                let snapshot = crate::core::policy::runtime::WorkspaceSnapshot {
+                    workspace_id: None,
+                    primary_root: a1.clone(),
+                    additional_roots: vec![b_root1.clone()],
+                    revision: 7,
+                };
+                crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
+                    b1.wait();
+                    assert!(jail_path_with_roots(&b_root1.join("marker.txt"), &a1, &[]).is_ok());
+                    assert!(jail_path_with_roots(&c1.join("marker.txt"), &a1, &[]).is_err());
+                });
+            });
+            let b2 = barrier;
+            let c2 = primary_c.clone();
+            let b_root2 = root_b.clone();
+            let second = scope.spawn(move || {
+                let snapshot = crate::core::policy::runtime::WorkspaceSnapshot {
+                    workspace_id: None,
+                    primary_root: c2.clone(),
+                    additional_roots: vec![],
+                    revision: 3,
+                };
+                crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
+                    b2.wait();
+                    assert!(jail_path_with_roots(&c2.join("marker.txt"), &c2, &[]).is_ok());
+                    assert!(jail_path_with_roots(&b_root2.join("marker.txt"), &c2, &[]).is_err());
+                });
+            });
+            first.join().unwrap();
+            second.join().unwrap();
+        });
+        assert!(
+            crate::core::policy::runtime::REQUEST_WORKSPACE
+                .try_with(|_| ())
+                .is_err()
+        );
+    }
+
+    #[cfg(not(feature = "no-jail"))]
+    #[test]
+    fn strict_workspace_snapshots_isolate_clients_and_reject_cross_root_reads() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        let c = tmp.path().join("c");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("marker.txt"), "marker").unwrap();
+        }
+        let snap_a = crate::core::policy::runtime::WorkspaceSnapshot {
+            workspace_id: None,
+            primary_root: a.canonicalize().unwrap(),
+            additional_roots: vec![b.canonicalize().unwrap()],
+            revision: 1,
+        };
+        let snap_c = crate::core::policy::runtime::WorkspaceSnapshot {
+            workspace_id: None,
+            primary_root: c.canonicalize().unwrap(),
+            additional_roots: Vec::new(),
+            revision: 9,
+        };
+        let check = |snapshot: crate::core::policy::runtime::WorkspaceSnapshot,
+                     allow: &std::path::Path,
+                     deny: &std::path::Path| {
+            crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(
+                Some(snapshot.clone()),
+                || {
+                    assert!(snapshot.allows(allow));
+                    assert!(!snapshot.allows(deny));
+                    assert!(
+                        jail_path_with_roots(
+                            &allow.join("marker.txt"),
+                            &snapshot.primary_root,
+                            &[]
+                        )
+                        .is_ok()
+                    );
+                    assert!(
+                        jail_path_with_roots(&deny.join("marker.txt"), &snapshot.primary_root, &[])
+                            .is_err()
+                    );
+                },
+            );
+        };
+        check(snap_a, &b, &c);
+        check(snap_c, &c, &b);
+        // Scope exit must not retain the preceding client's authority.
+        assert!(
+            crate::core::policy::runtime::REQUEST_WORKSPACE
+                .try_with(|_| ())
+                .is_err()
+        );
+    }
 
     #[cfg(not(feature = "no-jail"))]
     #[test]

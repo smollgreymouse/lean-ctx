@@ -35,11 +35,30 @@ pub(crate) fn resolve_search_root(path: &str) -> Result<(PathBuf, Option<String>
         let requested = raw_dir
             .canonicalize()
             .map_err(|_| "source path unavailable")?;
-        if !requested.starts_with(&root) {
-            return Err("source path is outside the request authority".into());
+        if requested.starts_with(&root) {
+            return Ok((root.clone(), search_subdir_filter(&root, &requested)));
         }
-        let subdir = search_subdir_filter(&root, &requested);
-        return Ok((root, subdir));
+        // An MCP call may explicitly authorize independent workspace roots.
+        // Search authority is narrower than PathJail: allow_paths alone never
+        // grants indexing/search authority. Reject all non-member paths.
+        if let Some(extra) = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+            .try_with(|slot| slot.borrow().clone())
+            .ok()
+        {
+            for candidate in extra {
+                // Canonicalize both sides so symlinks cannot escape an admitted root.
+                if let Ok(admitted) = candidate.canonicalize()
+                    && admitted.is_dir()
+                    && requested.starts_with(&admitted)
+                {
+                    return Ok((
+                        admitted.clone(),
+                        search_subdir_filter(&admitted, &requested),
+                    ));
+                }
+            }
+        }
+        return Err("source path is outside the request authority".into());
     }
     // A local default only claims paths inside it; request authority above
     // remains binding even when the caller supplies another project (#1875).

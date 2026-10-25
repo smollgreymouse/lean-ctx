@@ -144,6 +144,63 @@ mod root_resolution_tests {
     }
 
     #[test]
+    fn request_authority_accepts_only_session_search_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("primary");
+        let b = tmp.path().join("attached");
+        let c = tmp.path().join("foreign");
+        std::fs::create_dir_all(a.join("src")).unwrap();
+        std::fs::create_dir_all(b.join("src")).unwrap();
+        std::fs::create_dir_all(&c).unwrap();
+
+        crate::core::policy::runtime::REQUEST_SEARCH_ROOTS.sync_scope(
+            std::cell::RefCell::new(vec![b.clone()]),
+            || {
+                crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
+                    std::cell::RefCell::new(Some(a.clone())),
+                    || {
+                        assert_eq!(
+                            resolve_search_root(&b.join("src").to_string_lossy()).unwrap(),
+                            (b.canonicalize().unwrap(), Some("src".into()))
+                        );
+                        assert_eq!(
+                            resolve_search_root(&a.join("src").to_string_lossy()).unwrap(),
+                            (a.canonicalize().unwrap(), Some("src".into()))
+                        );
+                        assert_eq!(
+                            resolve_search_root(&c.to_string_lossy()).unwrap_err(),
+                            "source path is outside the request authority"
+                        );
+                    },
+                )
+            },
+        );
+    }
+
+    #[test]
+    fn sibling_without_request_search_roots_stays_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("primary");
+        let b = tmp.path().join("only_pathjail");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        crate::core::policy::runtime::REQUEST_SEARCH_ROOTS.sync_scope(
+            std::cell::RefCell::new(Vec::new()),
+            || {
+                crate::core::policy::runtime::REQUEST_PROJECT.sync_scope(
+                    std::cell::RefCell::new(Some(a)),
+                    || {
+                        assert_eq!(
+                            resolve_search_root(&b.to_string_lossy()).unwrap_err(),
+                            "source path is outside the request authority"
+                        )
+                    },
+                )
+            },
+        );
+    }
+
+    #[test]
     fn request_authority_still_rejects_another_projects_path() {
         let tmp = tempfile::tempdir().unwrap();
         let a = tmp.path().join("authorized");

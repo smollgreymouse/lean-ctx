@@ -242,6 +242,7 @@ mod tests {
             last_consolidate_ts: None,
             last_aaak_hash: None,
             extra_roots: Vec::new(),
+            client_workspace_roots: Vec::new(),
             wakeup_manifest: Vec::new(),
             playbook: crate::core::session::Playbook::default(),
             last_semantic_query: None,

@@ -61,6 +61,37 @@ fn suppress_initialize_instructions(client_id: &str) -> bool {
 
     cfg.declines_rule_steering() || matches!(client_id, "antigravity" | "gemini-cli")
 }
+
+const STRICT_WORKSPACE_LEGACY_TOOLS_ENV: &str = "LEAN_CTX_STRICT_WORKSPACE_LEGACY_TOOLS";
+
+/// Harr can opt into the pre-Workspace tool surface while retaining the
+/// request-scoped Workspace authority/root model. Upstream strict mode remains
+/// conservative by default; the compatibility flag is explicit and local to
+/// the launcher.
+pub(crate) fn strict_workspace_legacy_tools_enabled() -> bool {
+    std::env::var(STRICT_WORKSPACE_LEGACY_TOOLS_ENV).as_deref() == Ok("1")
+}
+
+fn strict_workspace_tool_allowed(name: &str) -> bool {
+    if strict_workspace_legacy_tools_enabled()
+        && matches!(
+            name,
+            "ctx_call" | "ctx_glob" | "ctx_read" | "ctx_search" | "ctx_shell" | "ctx_tools"
+        )
+    {
+        return true;
+    }
+    matches!(
+        name,
+        "ctx_read"
+            | "ctx_tree"
+            | "ctx_search"
+            | "ctx_workspace_get"
+            | "ctx_workspace_list"
+            | "ctx_workspace_diagnose"
+    )
+}
+
 impl ServerHandler for LeanCtxServer {
     fn get_info(&self) -> ServerInfo {
         let capabilities = server_capabilities(true, true);
@@ -100,9 +131,18 @@ impl ServerHandler for LeanCtxServer {
             tracing::info!("Client supports MCP roots/list — will resolve on first tool call");
         }
 
-        let env_root = roots::root_from_env().or_else(roots::root_from_workspace_env);
-        let derived_root = derive_project_root_from_cwd();
-        let effective_root = env_root.or(derived_root);
+        let effective_root = if self.workspace_store_path.is_some()
+            && std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1")
+        {
+            // A launcher-bound Workspace is the authority source. Do not let
+            // process CWD/env silently replace its trusted primary binding at
+            // MCP initialize time; the store/primary equality is checked on use.
+            self.startup_project_root.clone()
+        } else {
+            let env_root = roots::root_from_env().or_else(roots::root_from_workspace_env);
+            let derived_root = derive_project_root_from_cwd();
+            env_root.or(derived_root)
+        };
 
         let cwd_str = std::env::current_dir()
             .ok()
@@ -110,7 +150,15 @@ impl ServerHandler for LeanCtxServer {
             .unwrap_or_default();
         {
             let mut session = self.session.write().await;
-            if !cwd_str.is_empty() {
+            let strict_workspace = self.workspace_store_path.is_some()
+                && std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
+            if strict_workspace {
+                // Never seed ctx_shell from the MCP process CWD under strict
+                // authority: the daemon may have been launched from HOME or a
+                // sibling checkout. Start at the trusted primary; explicit cwd
+                // requests still pass through the request-scoped Workspace jail.
+                session.shell_cwd = effective_root.clone();
+            } else if !cwd_str.is_empty() {
                 session.shell_cwd = Some(cwd_str.clone());
             }
             if let Some(ref root) = effective_root {
@@ -144,13 +192,28 @@ impl ServerHandler for LeanCtxServer {
                     session.project_root = None;
                 }
             }
-            let cfg_extra = crate::core::config::Config::load().extra_roots;
-            if !cfg_extra.is_empty() {
-                let existing: std::collections::HashSet<_> =
-                    session.extra_roots.iter().cloned().collect();
-                for r in cfg_extra {
-                    if !existing.contains(&r) {
-                        session.extra_roots.push(r);
+            // PathJail accepts LEAN_CTX_EXTRA_ROOTS directly. Mirror only that
+            // explicit multi-root authority into the session so search and
+            // PathJail agree; LEAN_CTX_ALLOW_PATH must NOT grant search scope.
+            let mut cfg_extra = crate::core::config::Config::load().extra_roots;
+            if let Some(extra) = std::env::var_os("LEAN_CTX_EXTRA_ROOTS") {
+                cfg_extra.extend(
+                    std::env::split_paths(&extra).map(|path| path.to_string_lossy().into_owned()),
+                );
+            }
+            for path in cfg_extra {
+                if path.trim().is_empty() {
+                    continue;
+                }
+                let candidate = std::path::Path::new(&path);
+                if let Ok(canonical) = candidate.canonicalize() {
+                    if canonical.is_dir() {
+                        let canonical = canonical.to_string_lossy().into_owned();
+                        if session.project_root.as_deref() != Some(canonical.as_str())
+                            && !session.extra_roots.contains(&canonical)
+                        {
+                            session.extra_roots.push(canonical);
+                        }
                     }
                 }
             }
@@ -561,6 +624,32 @@ impl ServerHandler for LeanCtxServer {
                 }
             };
 
+            let tools = if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1") {
+                tools
+                    .into_iter()
+                    .filter(|tool| strict_workspace_tool_allowed(tool.name.as_ref()))
+                    .collect()
+            } else { tools };
+
+            // Read-only workspace diagnostics: explicitly opt-in until workspace
+            // identity is authenticated. Never advertise a mutation endpoint here.
+            let mut tools = tools;
+            if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1") {
+                for (name, description) in [
+                    ("ctx_workspace_list", "List workspaces visible to this MCP connection (read-only)"),
+                    ("ctx_workspace_diagnose", "Diagnose workspace authority for this MCP connection (read-only)"),
+                ] {
+                    tools.push(crate::tool_defs::tool_def(
+                        name, description,
+                        serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+                    ));
+                }
+                tools.push(crate::tool_defs::tool_def(
+                    "ctx_workspace_get",
+                    "Read this MCP connection's effective Workspace roots and authority provenance (read-only)",
+                    serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+                ));
+            }
             Ok(ListToolsResult {
                 tools,
                 ..Default::default()
@@ -633,6 +722,12 @@ impl ServerHandler for LeanCtxServer {
         // instead of ctx_read — serve the file directly rather than erroring.
         let session = self.session.read().await;
         let root = session.project_root.as_deref();
+        if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1") {
+            return Err(rmcp::ErrorData::resource_not_found(
+                "File resources are unavailable in strict Workspace mode",
+                None,
+            ));
+        }
         match file_resource::read_file_resource(&request.uri, root, &session.extra_roots) {
             Ok(contents) => Ok(rmcp::model::ReadResourceResult::new(contents)),
             Err(file_resource::FileResourceError::NotAFilePath) => {
@@ -652,6 +747,105 @@ impl ServerHandler for LeanCtxServer {
     ) -> Result<CallToolResult, ErrorData> {
         use std::panic::AssertUnwindSafe;
 
+        // Strict isolation must not expose a bypass through ctx_shell, ctx_call,
+        // arbitrary edits or specialized readers that do not honor PathJail.
+        // These can be re-enabled only after an explicit source-admission audit.
+        if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1")
+            && !strict_workspace_tool_allowed(request.name.as_ref())
+        {
+            return Err(ErrorData::invalid_params(
+                "Tool unavailable in strict Workspace mode",
+                None,
+            ));
+        }
+
+        // Workspace introspection is bound to this server/peer, never a user-
+        // supplied session identifier. Do not expose global config or credentials.
+        if matches!(
+            request.name.as_ref(),
+            "ctx_workspace_get" | "ctx_workspace_list" | "ctx_workspace_diagnose"
+        ) {
+            if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() != Ok("1") {
+                return Err(ErrorData::invalid_params(
+                    "Strict workspace mode is not enabled",
+                    None,
+                ));
+            }
+            self.resolve_roots_once().await;
+            let session = self.session.read().await;
+            let primary = session.project_root.as_deref().and_then(|p| {
+                let path = std::path::PathBuf::from(p).canonicalize().ok()?;
+                (path.is_dir() && !crate::core::pathutil::is_broad_or_unsafe_root(&path))
+                    .then(|| path.to_string_lossy().into_owned())
+            });
+            let Some(primary) = primary else {
+                return Err(ErrorData::invalid_params(
+                    "Strict workspace authority unavailable",
+                    None,
+                ));
+            };
+            let roots: Vec<String> = session
+                .client_workspace_roots
+                .iter()
+                .filter_map(|p| {
+                    let path = std::path::PathBuf::from(p).canonicalize().ok()?;
+                    (path.is_dir()
+                        && !crate::core::pathutil::is_broad_or_unsafe_root(&path)
+                        && path.to_string_lossy() != primary)
+                        .then(|| path.to_string_lossy().into_owned())
+                })
+                .collect();
+            drop(session);
+            let stored = if self.workspace_store_path.is_some() {
+                let file = crate::server::workspace_store::load(
+                    self.workspace_store_path.as_deref().expect("checked"),
+                )
+                .map_err(|_| ErrorData::invalid_params("Workspace store unavailable", None))?;
+                if file.primary != primary {
+                    return Err(ErrorData::invalid_params(
+                        "Workspace binding mismatch",
+                        None,
+                    ));
+                }
+                Some(file)
+            } else {
+                None
+            };
+            let roots = stored
+                .as_ref()
+                .map(|value| value.additional.clone())
+                .unwrap_or(roots);
+            let mut registry = self.workspace_registry.write().await;
+            registry.update(primary.clone(), roots.clone());
+            let identity = registry.id.clone();
+            let revision = registry.revision;
+            drop(registry);
+            let value = serde_json::json!({
+                "workspaceId": stored.as_ref().map(|v| v.id.clone()).unwrap_or(identity),
+                "schemaVersion": 1,
+                "primaryRoot": primary,
+                "additionalRoots": roots,
+                "rootSource": if stored.is_some() { "launcher-store" } else { "mcp-roots-list" },
+                "revision": stored.as_ref().map(|v| v.revision).unwrap_or(revision),
+                "mutable": stored.is_some(),
+                "authenticatedWorkspace": stored.is_some(),
+                "legacyGlobalRootsInherited": false,
+            });
+            let response = match request.name.as_ref() {
+                "ctx_workspace_list" => serde_json::json!({"schemaVersion":1,"workspaces":[value]}),
+                "ctx_workspace_diagnose" => serde_json::json!({
+                    "schemaVersion":1,
+                    "workspace":value,
+                    "issues":["workspace_identity_not_authenticated", "mutation_api_unavailable"],
+                    "status": if stored.is_some() { "launcher_bound" } else { "read_only_untrusted_roots" },
+                }),
+                _ => value,
+            };
+            return Ok(CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text(response.to_string()),
+            ]));
+        }
+
         // In flight until this call returns — the idle policy never releases
         // or exits under a running call.
         let _activity = crate::server::mcp_idle::begin_call();
@@ -661,14 +855,9 @@ impl ServerHandler for LeanCtxServer {
             .meta
             .as_ref()
             .and_then(rmcp::model::Meta::get_progress_token);
-        if let Some(ref token) = progress_token {
-            let sender =
-                crate::server::progress::ProgressSender::new(context.peer.clone(), token.clone());
-            *self
-                .progress_sender
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
-        }
+        let request_progress_sender = progress_token.as_ref().map(|token| {
+            crate::server::progress::ProgressSender::new(context.peer.clone(), token.clone())
+        });
 
         let tool_name_for_panic = request.name.as_ref().to_string();
         let args_fp_for_panic = request
@@ -688,8 +877,11 @@ impl ServerHandler for LeanCtxServer {
         // so a tool that waits on a child process can observe an abandoned call
         // instead of holding its blocking-pool slot until its own soft cap.
         match AssertUnwindSafe(
-            crate::server::tool_trait::REQUEST_CT
-                .scope(ct.clone(), self.call_tool_guarded(request)),
+            crate::server::progress::REQUEST_PROGRESS_SENDER.scope(
+                request_progress_sender,
+                crate::server::tool_trait::REQUEST_CT
+                    .scope(ct.clone(), self.call_tool_guarded(request)),
+            ),
         )
         .catch_unwind()
         .await
@@ -758,6 +950,33 @@ fn startup_rule_maintenance_at_home(home: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_workspace_legacy_tool_surface_is_explicit_opt_in() {
+        let _guard = crate::core::data_dir::test_env_lock();
+        let _unset = crate::setup::EnvVarGuard::remove(STRICT_WORKSPACE_LEGACY_TOOLS_ENV);
+        assert!(strict_workspace_tool_allowed("ctx_read"));
+        assert!(!strict_workspace_tool_allowed("ctx_glob"));
+        assert!(!strict_workspace_tool_allowed("ctx_shell"));
+        assert!(!strict_workspace_tool_allowed("ctx_tools"));
+        assert!(!strict_workspace_tool_allowed("ctx_call"));
+        drop(_unset);
+
+        let _enabled = crate::setup::EnvVarGuard::set(STRICT_WORKSPACE_LEGACY_TOOLS_ENV, "1");
+        for tool in [
+            "ctx_call",
+            "ctx_glob",
+            "ctx_read",
+            "ctx_search",
+            "ctx_shell",
+            "ctx_tools",
+        ] {
+            assert!(
+                strict_workspace_tool_allowed(tool),
+                "legacy Harr surface must include {tool}"
+            );
+        }
+    }
 
     #[test]
     fn initialize_instructions_respect_explicit_auto_inject_false() {
