@@ -113,7 +113,23 @@ pub async fn acquire(
         // transport has closed (child exited/crashed). Dropping an Entry releases
         // its `ClientService`, which tears down the child. A dead session is thus
         // never handed out, so callers never send into a dead pipe.
-        map.retain(|_, e| now.duration_since(e.last_used) < IDLE_TTL && !e.service.is_closed());
+        map.retain(|entry_key, e| {
+            let idle = now.duration_since(e.last_used);
+            let closed = e.service.is_closed();
+            if closed {
+                tracing::warn!(
+                    pool_key = entry_key,
+                    "downstream MCP transport closed; evicting session"
+                );
+            } else if idle >= IDLE_TTL {
+                tracing::warn!(
+                    pool_key = entry_key,
+                    idle_secs = idle.as_secs(),
+                    "downstream MCP idle session expired; closing transport"
+                );
+            }
+            !closed && idle < IDLE_TTL
+        });
         if let Some(entry) = map.get_mut(&k) {
             entry.last_used = now;
             return Ok(entry.service.clone());
@@ -126,6 +142,12 @@ pub async fn acquire(
     let mut map = lock();
     // A racing first-call may have inserted already; last writer wins and the
     // loser's child is closed when its Arc drops.
+    if map.contains_key(&k) {
+        tracing::warn!(
+            pool_key = k,
+            "concurrent downstream MCP connection replaced an existing pooled session"
+        );
+    }
     map.insert(
         k,
         Entry {
@@ -139,13 +161,25 @@ pub async fn acquire(
 /// Drop the pooled session for `key` (e.g. after a transport-level failure), so
 /// the next [`acquire`] reopens a fresh one.
 pub fn evict(key: u64) {
-    lock().remove(&key);
+    if lock().remove(&key).is_some() {
+        tracing::warn!(
+            pool_key = key,
+            "downstream MCP session evicted after failed request"
+        );
+    }
 }
 
 /// Drop every pooled session (closing all children). Called when the gateway
 /// wiring changes (install/remove/revoke → [`super::catalog::invalidate`]).
 pub fn clear() {
-    lock().clear();
+    let mut map = lock();
+    if !map.is_empty() {
+        tracing::warn!(
+            sessions = map.len(),
+            "downstream MCP pool cleared by configuration/catalog invalidation"
+        );
+    }
+    map.clear();
 }
 
 /// Number of live pooled sessions (test/diagnostic helper).
