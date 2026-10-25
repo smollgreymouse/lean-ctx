@@ -97,6 +97,7 @@ pub async fn open(
                 if !env.is_empty() {
                     cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
                 }
+                tracing::debug!("opening downstream MCP stdio transport");
                 let child = TokioChildProcess::new(cmd)
                     .map_err(|e| format!("spawn `{command}` failed: {e}"))?;
                 GatewayClientHandler::default()
@@ -240,7 +241,8 @@ pub async fn proxy_call_with_progress(
     let key = super::pool::key(transport);
     let service = super::pool::acquire(transport, timeout).await?;
     let result = call_tool_on_with_progress(&service, tool, arguments, timeout, progress).await;
-    if result.is_err() {
+    if let Err(ref error) = result {
+        tracing::error!(pool_key = key, tool_name = tool, error = %error, "downstream MCP tool call failed; session will be evicted without retry");
         super::pool::evict(key);
     }
     result
