@@ -56,6 +56,12 @@ pub fn split_namespaced(handle: &str) -> Option<(&str, &str)> {
 
 static CACHE: Mutex<Option<(Instant, Catalog)>> = Mutex::new(None);
 
+/// Single-flight gate for rebuilds: on a cold/expired cache every concurrent
+/// `find` used to run its own `build`, each connecting to every enabled
+/// server — a stampede of child spawns at cold start. One rebuild runs; the
+/// rest wait and then reuse the refreshed cache.
+static REBUILD_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Drop the cached catalog so the next [`get`] rebuilds it. Also clears the
 /// session pool (#1078): a wiring change (install/remove/revoke) must not keep a
 /// stale child process alive for a server that may no longer exist.
@@ -70,6 +76,14 @@ pub fn invalidate() {
 /// `cache_ttl_secs`.
 pub async fn get(cfg: &GatewayConfig) -> Catalog {
     let ttl = Duration::from_secs(cfg.cache_ttl_secs);
+    if let Ok(guard) = CACHE.lock()
+        && let Some((at, cat)) = guard.as_ref()
+        && at.elapsed() < ttl
+    {
+        return cat.clone();
+    }
+    let _gate = REBUILD_GATE.lock().await;
+    // A concurrent caller may have finished the rebuild while we waited.
     if let Ok(guard) = CACHE.lock()
         && let Some((at, cat)) = guard.as_ref()
         && at.elapsed() < ttl
