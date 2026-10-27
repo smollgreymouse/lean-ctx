@@ -327,7 +327,13 @@ mod tests {
 
     #[test]
     fn unsafe_metadata_diagnostic_is_bounded_and_does_not_repair() {
-        let temporary = tempfile::tempdir().unwrap();
+        // Explicit 0o700: TempDir::new() inherits the umask, and under a
+        // user-private-groups umask of 002 the directory lands group-writable,
+        // which the private-storage checks below (correctly) refuse.
+        let temporary = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         for (leaf, kind) in [
             (".open.lock", "opener_lock"),
             ("learning.sqlite3", "database"),
@@ -358,7 +364,13 @@ mod tests {
 
     #[test]
     fn creates_private_storage_and_reopens() {
-        let temporary = tempfile::tempdir().unwrap();
+        // Explicit 0o700: TempDir::new() inherits the umask, and under a
+        // user-private-groups umask of 002 the directory lands group-writable,
+        // which the private-storage checks below (correctly) refuse.
+        let temporary = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let path = temporary.path().canonicalize().unwrap().join("data");
         drop(open_private(&path).unwrap());
         drop(open_private(&path).unwrap());
@@ -376,7 +388,13 @@ mod tests {
 
     #[test]
     fn refuses_links_sidecars_and_insecure_permissions_without_repair() {
-        let temporary = tempfile::tempdir().unwrap();
+        // Explicit 0o700: TempDir::new() inherits the umask, and under a
+        // user-private-groups umask of 002 the directory lands group-writable,
+        // which the private-storage checks below (correctly) refuse.
+        let temporary = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let root = temporary.path().canonicalize().unwrap();
         let outside = root.join("outside");
         std::fs::create_dir(&outside).unwrap();
@@ -418,7 +436,13 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_ancestor_and_traversal_before_creating_children() {
-        let temporary = tempfile::tempdir().unwrap();
+        // Explicit 0o700: TempDir::new() inherits the umask, and under a
+        // user-private-groups umask of 002 the directory lands group-writable,
+        // which the private-storage checks below (correctly) refuse.
+        let temporary = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let root = temporary.path().canonicalize().unwrap();
         let unsafe_parent = root.join("unsafe");
         std::fs::create_dir(&unsafe_parent).unwrap();
@@ -432,7 +456,13 @@ mod tests {
 
     #[test]
     fn concurrent_first_open_keeps_one_private_database() {
-        let temporary = tempfile::tempdir().unwrap();
+        // Explicit 0o700: TempDir::new() inherits the umask, and under a
+        // user-private-groups umask of 002 the directory lands group-writable,
+        // which the private-storage checks below (correctly) refuse.
+        let temporary = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let path = temporary.path().canonicalize().unwrap().join("data");
         let start = std::sync::Barrier::new(4);
         std::thread::scope(|scope| {
