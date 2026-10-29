@@ -271,9 +271,9 @@ pub async fn proxy_call_with_progress(
     progress: Option<ProgressCallback>,
 ) -> Result<CallToolResult, String> {
     let key = super::pool::key(transport);
-    let service = super::pool::acquire(transport, timeout).await?;
-    let _lease = super::pool::in_flight_guard(key);
-    let result = call_tool_on_with_progress(&service, tool, arguments, timeout, progress).await;
+    let session = super::pool::acquire(transport, timeout).await?;
+    let result =
+        call_tool_on_with_progress(&session.service, tool, arguments, timeout, progress).await;
     if let Err(ref error) = result {
         if is_timeout_error(error) {
             tracing::warn!(pool_key = key, tool_name = tool, error = %error, "downstream MCP tool call timed out; pooled session kept alive");
@@ -294,18 +294,15 @@ pub async fn fetch_tools(
     timeout: Duration,
 ) -> Result<Vec<Tool>, String> {
     let key = super::pool::key(transport);
-    let service = super::pool::acquire(transport, timeout).await?;
-    let lease = super::pool::in_flight_guard(key);
-    match list_tools_on(&service, timeout).await {
+    let session = super::pool::acquire(transport, timeout).await?;
+    match list_tools_on(&session.service, timeout).await {
         Ok(tools) => Ok(tools),
         Err(e) => {
             if is_broken_connection(&e) {
-                drop(lease);
+                drop(session);
                 super::pool::evict(key);
-                let service = super::pool::acquire(transport, timeout).await?;
-                let _retry_lease = super::pool::in_flight_guard(key);
-                let retried = list_tools_on(&service, timeout).await;
-                retried
+                let retry_session = super::pool::acquire(transport, timeout).await?;
+                list_tools_on(&retry_session.service, timeout).await
             } else {
                 Err(e)
             }
