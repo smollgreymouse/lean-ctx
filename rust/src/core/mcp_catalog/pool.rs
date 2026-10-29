@@ -241,10 +241,7 @@ pub struct InFlightGuard {
     in_flight: Arc<AtomicU32>,
 }
 
-fn owns_current_session(
-    current: &Arc<AtomicU32>,
-    lease_session: &Arc<AtomicU32>,
-) -> bool {
+fn owns_current_session(current: &Arc<AtomicU32>, lease_session: &Arc<AtomicU32>) -> bool {
     Arc::ptr_eq(current, lease_session)
 }
 
