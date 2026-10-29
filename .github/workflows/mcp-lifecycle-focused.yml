@@ -36,10 +36,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: Run MCP pool lifecycle integration test
         working-directory: rust
-        run: cargo test --locked -j 1 --test main mcp_pool_lifecycle -- --nocapture
+        run: >-
+          cargo test --locked -j 1
+          --config profile.test.package.lean-ctx.opt-level=0
+          --test main mcp_pool_lifecycle -- --nocapture
+      - name: Verify icon on stdio initialize and tools/list
+        working-directory: rust
+        run: >-
+          cargo test --locked -j 1
+          --config profile.test.package.lean-ctx.opt-level=0
+          --test main mcp_fast_initialize_669 -- --nocapture
+      - name: Run MCP pool unit tests
+        working-directory: rust
+        run: >-
+          cargo test --locked -j 1
+          --config profile.test.package.lean-ctx.opt-level=0
+          --lib core::mcp_catalog::pool::tests -- --nocapture
       - name: Run icon metadata unit tests
         working-directory: rust
-        run: cargo test --locked -j 1 --lib server::server_handler::icon_metadata_tests -- --nocapture
-      - name: Run pool lease and identity unit tests
-        working-directory: rust
-        run: cargo test --locked -j 1 --lib core::mcp_catalog::pool::tests -- --nocapture
+        run: >-
+          cargo test --locked -j 1
+          --config profile.test.package.lean-ctx.opt-level=0
+          --lib server::server_handler::icon_metadata_tests -- --nocapture
