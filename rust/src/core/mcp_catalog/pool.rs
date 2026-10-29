@@ -7,9 +7,11 @@
 //!
 //! - **keyed** by the resolved transport (same command/args/env/caps/url → same
 //!   session), so two different servers never share a child,
+//! - **coalesced**: concurrent cold opens of the same key share one child via a
+//!   per-key connect gate instead of racing spawns,
 //! - **idle-evicted**: a session unused for `IDLE_TTL` is dropped on the next
 //!   access (closing the child's stdin → the server exits), swept opportunistically
-//!   on every [`acquire`],
+//!   on every [`acquire`]; sessions with calls in flight are never expired,
 //! - **liveness-checked**: [`acquire`] also drops any session whose transport has
 //!   closed (the child exited/crashed) *before* handing one out, so a request is
 //!   never sent into a dead pipe — and callers never have to blindly re-send a
@@ -35,11 +37,29 @@ const IDLE_TTL: Duration = Duration::from_mins(5);
 struct Entry {
     service: Arc<ClientService>,
     last_used: Instant,
+    /// Calls currently holding this session. Idle expiry is skipped while
+    /// this is above zero: `last_used` is only refreshed when a call is
+    /// handed out, so a long-running call would otherwise look idle to the
+    /// sweep and its session would be gone by the time it finishes.
+    in_flight: u32,
 }
 
 fn pool() -> &'static Mutex<HashMap<u64, Entry>> {
     static POOL: OnceLock<Mutex<HashMap<u64, Entry>>> = OnceLock::new();
     POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Per-key serialization of cold opens. Two concurrent first calls used to
+/// each run `open()` — spawn + handshake — and the last-writer-wins insert
+/// killed the loser's child afterwards; with the gate the loser instead waits
+/// for the winner and reuses its session.
+fn connect_gate(key: u64) -> Arc<tokio::sync::Mutex<()>> {
+    static GATES: OnceLock<Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let gates = GATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = gates
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.entry(key).or_default().clone()
 }
 
 /// Stable identity for a resolved transport: same wiring -> same key -> same
@@ -115,23 +135,42 @@ pub async fn acquire(
         // never handed out, so callers never send into a dead pipe.
         map.retain(|entry_key, e| {
             let idle = now.duration_since(e.last_used);
-            let closed = e.service.is_closed();
+            // `is_closed()` alone cannot see a crashed downstream child: the
+            // serve loop exits with QuitReason::Closed without cancelling the
+            // token, and the request channel closing is the only reliable
+            // signal that the transport is gone.
+            let closed = e.service.is_closed() || e.service.is_transport_closed();
             if closed {
                 tracing::warn!(
                     pool_key = entry_key,
                     "downstream MCP transport closed; evicting session"
                 );
-            } else if idle >= IDLE_TTL {
+            } else if e.in_flight == 0 && idle >= IDLE_TTL {
                 tracing::warn!(
                     pool_key = entry_key,
                     idle_secs = idle.as_secs(),
                     "downstream MCP idle session expired; closing transport"
                 );
             }
-            !closed && idle < IDLE_TTL
+            !closed && (e.in_flight > 0 || idle < IDLE_TTL)
         });
         if let Some(entry) = map.get_mut(&k) {
             entry.last_used = now;
+            entry.in_flight += 1;
+            return Ok(entry.service.clone());
+        }
+    }
+
+    // Serialize the cold open per key: concurrent first calls share one child
+    // instead of each spawning their own.
+    let gate = connect_gate(k);
+    let _connect_permit = gate.lock().await;
+    {
+        let mut map = lock();
+        if let Some(entry) = map.get_mut(&k) {
+            // The gate winner opened the session while we waited.
+            entry.last_used = Instant::now();
+            entry.in_flight += 1;
             return Ok(entry.service.clone());
         }
     }
@@ -140,8 +179,8 @@ pub async fn acquire(
     // never hold a std Mutex across an await.
     let service = Arc::new(client::open(transport, timeout).await?);
     let mut map = lock();
-    // A racing first-call may have inserted already; last writer wins and the
-    // loser's child is closed when its Arc drops.
+    // Unreachable for same-key racers while the gate is held; kept as a
+    // belt-and-braces guard for any future path that skips the gate.
     if map.contains_key(&k) {
         tracing::warn!(
             pool_key = k,
@@ -153,9 +192,38 @@ pub async fn acquire(
         Entry {
             service: service.clone(),
             last_used: Instant::now(),
+            in_flight: 1,
         },
     );
     Ok(service)
+}
+
+/// Mark the session for `key` as no longer held by the caller (one call to
+/// [`release`] per granted [`acquire`]). Also refreshes `last_used`, so a call
+/// that just finished does not immediately look idle to the sweep.
+pub fn release(key: u64) {
+    let mut map = lock();
+    if let Some(entry) = map.get_mut(&key) {
+        entry.in_flight = entry.in_flight.saturating_sub(1);
+        entry.last_used = Instant::now();
+    }
+}
+
+/// Releases an acquired session when its request future is cancelled or exits
+/// early. Without this guard, cancellation can leave `in_flight` nonzero forever
+/// and prevent the idle sweep from reclaiming the session.
+pub struct InFlightGuard {
+    key: u64,
+}
+
+pub fn in_flight_guard(key: u64) -> InFlightGuard {
+    InFlightGuard { key }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        release(self.key);
+    }
 }
 
 /// Drop the pooled session for `key` (e.g. after a transport-level failure), so

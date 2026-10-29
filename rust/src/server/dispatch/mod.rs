@@ -671,11 +671,15 @@ impl LeanCtxServer {
     ///
     /// `ctx_shell` / `ctx_execute` run arbitrary user commands (builds, long
     /// test suites) and already enforce their own command timeouts, so a generic
-    /// watchdog would wrongly abort a legitimate long-running command. Every
-    /// other tool is bounded so a hang can never swallow the JSON-RPC response.
+    /// watchdog would wrongly abort a legitimate long-running command.
+    /// `ctx_tools` is likewise self-bounding: every downstream await carries its
+    /// own tokio timeout (connect budget, call timeout), so a handler cannot hang
+    /// past those — the generic watchdog only abandoned healthy long calls while
+    /// the downstream call kept running behind the agent's back. Every other
+    /// tool is bounded so a hang can never swallow the JSON-RPC response.
     /// Tunable via `LEAN_CTX_TOOL_TIMEOUT_SECS` (`0` disables the watchdog).
     fn handler_watchdog(name: &str) -> Option<Duration> {
-        if super::is_shell_tool_name(name) {
+        if super::is_shell_tool_name(name) || name == "ctx_tools" {
             return None;
         }
         watchdog_from_secs(read_watchdog_secs())
@@ -815,6 +819,10 @@ mod tests {
         assert!(
             LeanCtxServer::handler_watchdog("ctx_execute").is_none(),
             "ctx_execute must not be watchdog-bounded"
+        );
+        assert!(
+            LeanCtxServer::handler_watchdog("ctx_tools").is_none(),
+            "ctx_tools has request-scoped downstream timeouts and must not be abandoned by the generic watchdog"
         );
     }
 
