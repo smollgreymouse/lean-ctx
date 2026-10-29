@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 name: Harr binary release
 
 on:
@@ -56,7 +58,8 @@ jobs:
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
-        run: HARR_BUILD_ID="${GITHUB_REF_NAME}@$(git rev-parse --short=12 HEAD)" cargo build --release --locked --target ${{ matrix.target }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+        run: HARR_BUILD_ID="${GITHUB_REF_NAME}@$(git rev-parse --short=12 HEAD)" cargo build --release --locked -j 1 --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
@@ -80,8 +83,9 @@ jobs:
         working-directory: rust
         shell: pwsh
         run: |
+          $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
           $env:HARR_BUILD_ID = "$env:GITHUB_REF_NAME@$(git rev-parse --short=12 HEAD)"
-          cargo build --release --locked --target x86_64-pc-windows-msvc
+          cargo build --release --locked -j 1 --target x86_64-pc-windows-msvc
       - name: Package
         shell: pwsh
         run: Compress-Archive -Path "rust/target/x86_64-pc-windows-msvc/release/lean-ctx.exe" -DestinationPath "lean-ctx-x86_64-pc-windows-msvc.zip"

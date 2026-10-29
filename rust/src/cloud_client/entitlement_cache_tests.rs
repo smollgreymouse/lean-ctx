@@ -10,7 +10,7 @@ use lean_ctx_protocol::{
 };
 use sha2::Sha256;
 use std::cell::Cell;
-use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt, symlink};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -19,9 +19,27 @@ struct Fixture {
     envelope: EntitlementEnvelopeV1,
 }
 
+/// TempDir with an explicit 0o700: the default `TempDir::new()` inherits the
+/// process umask, and under a user-private-groups umask of 002 the directory
+/// lands group-writable — which the entitlement IO module's own safety checks
+/// (correctly) refuse.
+fn private_tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap()
+}
+
+/// Same as [`private_tempdir`] but for a named directory: `std::fs::create_dir`
+/// inherits the umask, and a user-private-groups umask of 002 lands the
+/// directory group-writable — which the safety checks (correctly) refuse.
+fn private_dir(path: &std::path::Path) {
+    std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+}
+
 impl Fixture {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let key = SigningKey::from_bytes(&[29; 32]);
         let paths = CachePaths {
             trust: dir.path().join("entitlement-trust.json"),
@@ -751,6 +769,10 @@ fn bounded_reader_rejects_symlink_fifo_hardlinks_and_excess_bytes_without_repair
     assert!(read_leaf(&path, ENVELOPE_LIMIT).is_err());
     std::fs::remove_file(&path).unwrap();
     std::fs::write(&path, vec![b'x'; 17]).unwrap();
+    // fs::write inherits the umask; under a 002 umask the file lands
+    // group-writable, which the reader (correctly) refuses. Pin 0644 so the
+    // assertion tests the byte limit, not the environment.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(read_leaf(&path, 17).unwrap().len(), 17);
     assert!(read_leaf(&path, 16).is_err());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
@@ -805,8 +827,8 @@ fn reader_rejects_parent_swap_without_reading_replacement_directory() {
     let parent = fixture._dir.path().join("reader-parent");
     let moved = fixture._dir.path().join("reader-moved");
     let outside = fixture._dir.path().join("reader-outside");
-    std::fs::create_dir(&parent).unwrap();
-    std::fs::create_dir(&outside).unwrap();
+    private_dir(&parent);
+    private_dir(&outside);
     atomic_replace(&parent.join("cache"), b"original").unwrap();
     atomic_replace(&outside.join("cache"), b"outside-not-authority").unwrap();
     let result = read_leaf_with(&parent.join("cache"), 100, false, || {
@@ -829,8 +851,8 @@ fn atomic_writer_parent_swap_cannot_publish_or_cleanup_in_replacement_directory(
     let parent = fixture._dir.path().join("writer-parent");
     let moved = fixture._dir.path().join("writer-moved");
     let outside = fixture._dir.path().join("writer-outside");
-    std::fs::create_dir(&parent).unwrap();
-    std::fs::create_dir(&outside).unwrap();
+    private_dir(&parent);
+    private_dir(&outside);
     atomic_replace(&parent.join("cache"), b"original").unwrap();
     atomic_replace(&outside.join("cache"), b"outside-untouched").unwrap();
     let result = atomic_replace_with(&parent.join("cache"), b"new", || {
@@ -862,8 +884,8 @@ fn refresh_lease_detects_parent_replacement_without_creating_lock_outside() {
     let parent = fixture._dir.path().join("lock-parent");
     let moved = fixture._dir.path().join("lock-moved");
     let outside = fixture._dir.path().join("lock-outside");
-    std::fs::create_dir(&parent).unwrap();
-    std::fs::create_dir(&outside).unwrap();
+    private_dir(&parent);
+    private_dir(&outside);
     let lease = RefreshLease::acquire(&parent.join("cache")).unwrap();
     std::fs::rename(&parent, &moved).unwrap();
     symlink(&outside, &parent).unwrap();

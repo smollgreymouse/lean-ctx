@@ -21,11 +21,14 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::mcp_process as process;
+use base64::Engine as _;
 
 /// Generous for CI (debug binary, cold cache, shared runners) yet far below
 /// the pathological regressions this guards against (30s crash-loop backoff,
 /// TCP timeouts, N×ps orphan sweeps in front of the handshake).
 const INITIALIZE_DEADLINE: Duration = Duration::from_secs(10);
+const ICON_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pS8AAAAASUVORK5CYII=";
 
 struct TestEnv {
     _tmp: tempfile::TempDir,
@@ -33,6 +36,7 @@ struct TestEnv {
     data: std::path::PathBuf,
     state: std::path::PathBuf,
     project: std::path::PathBuf,
+    icon: std::path::PathBuf,
 }
 
 fn test_env() -> TestEnv {
@@ -41,18 +45,27 @@ fn test_env() -> TestEnv {
     let data = tmp.path().join("data");
     let state = tmp.path().join("state");
     let project = tmp.path().join("project");
+    let icon = tmp.path().join("harr-test-icon.png");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&data).unwrap();
     std::fs::create_dir_all(&state).unwrap();
     std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::write(project.join("hello.txt"), "hello fast init\n").unwrap();
     std::fs::write(project.join("second.txt"), "second fast init\n").unwrap();
+    std::fs::write(
+        &icon,
+        base64::engine::general_purpose::STANDARD
+            .decode(ICON_PNG_BASE64)
+            .expect("valid test PNG fixture"),
+    )
+    .unwrap();
     TestEnv {
         _tmp: tmp,
         home,
         data,
         state,
         project,
+        icon,
     }
 }
 
@@ -72,6 +85,7 @@ fn initialize_answers_fast_and_first_call_succeeds() {
         .env("HOME", &env.home)
         .env("LEAN_CTX_DATA_DIR", &env.data)
         .env("LEAN_CTX_STATE_DIR", &env.state)
+        .env("HARR_MCP_ICON_PATH", &env.icon)
         .env("CODEX_HOME", env.home.join(".codex"))
         .env("LEAN_CTX_HEADLESS", "1")
         // Root detection must derive from the temp project's cwd. When the
@@ -81,6 +95,9 @@ fn initialize_answers_fast_and_first_call_succeeds() {
         .env_remove("LEAN_CTX_PROJECT_ROOT")
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("WORKSPACE_FOLDER_PATHS")
+        .env_remove("LEAN_CTX_WORKSPACE_FILE")
+        .env_remove("LEAN_CTX_STRICT_WORKSPACE")
+        .env_remove("LEAN_CTX_STRICT_WORKSPACE_LEGACY_TOOLS")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -137,6 +154,16 @@ fn initialize_answers_fast_and_first_call_succeeds() {
         init_res["result"]["serverInfo"]["name"].is_string(),
         "initialize must return serverInfo; got: {init_res}"
     );
+    let icons = init_res["result"]["serverInfo"]["icons"]
+        .as_array()
+        .expect("initialize serverInfo must advertise the configured icon");
+    assert_eq!(icons.len(), 1, "the server should advertise one icon");
+    assert_eq!(
+        icons[0]["src"],
+        format!("data:image/png;base64,{ICON_PNG_BASE64}"),
+        "initialize must embed the PNG from HARR_MCP_ICON_PATH"
+    );
+    assert_eq!(icons[0]["mimeType"], "image/png");
     assert!(
         elapsed < INITIALIZE_DEADLINE,
         "spawn → initialize-response took {elapsed:?} (bound {INITIALIZE_DEADLINE:?}) — \
@@ -191,6 +218,45 @@ fn initialize_answers_fast_and_first_call_succeeds() {
     assert!(
         second_text.contains("second fast init"),
         "ctx_read must deliver the second file; got: {second_res}"
+    );
+
+    let list = serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}
+    });
+    writeln!(stdin, "{list}").expect("write tools/list");
+    let list_res = recv_response(4, Duration::from_secs(30));
+    assert!(
+        list_res["error"].is_null(),
+        "tools/list after initialize and calls must succeed; got: {list_res}"
+    );
+    let tools = list_res["result"]["tools"]
+        .as_array()
+        .expect("tools/list must return an array");
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|tool| {
+            tool["name"]
+                .as_str()
+                .expect("every listed tool must have a name")
+        })
+        .collect();
+    let unique_names: std::collections::HashSet<&str> = names.iter().copied().collect();
+    assert_eq!(
+        unique_names.len(),
+        names.len(),
+        "tools/list must not duplicate tool names"
+    );
+    let read_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "ctx_read")
+        .expect("tools/list must preserve ctx_read");
+    assert!(
+        read_tool["inputSchema"]["properties"]["path"].is_object(),
+        "ctx_read must preserve its path schema"
+    );
+    assert!(
+        tools.iter().all(|tool| tool.get("icons").is_none()),
+        "the server icon must not be repeated on individual tools"
     );
 
     drop(stdin); // EOF → clean server shutdown

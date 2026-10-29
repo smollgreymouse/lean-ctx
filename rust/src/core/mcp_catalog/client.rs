@@ -126,10 +126,27 @@ pub async fn open(
             }
         }
     };
-    tokio::time::timeout(timeout, connect)
+    tokio::time::timeout(connect_budget(timeout), connect)
         .await
-        .map_err(|_| "downstream connect timed out".to_string())?
+        .map_err(|_| {
+            format!(
+                "downstream connect timed out after {}s",
+                connect_budget(timeout).as_secs()
+            )
+        })?
 }
+
+/// Lower bound for the downstream connect budget. `timeout` is the *call*
+/// timeout (default 30 s), but a cold connect pays process spawn + the
+/// `initialize` handshake — and, with a binary pin, hashing the executable —
+/// which npm-based servers regularly exceed. A connect that dies at the call
+/// budget wedges the first call of every respawn, so connects get their own
+/// floor; a configured budget above it still wins.
+fn connect_budget(timeout: Duration) -> Duration {
+    timeout.max(MIN_CONNECT_TIMEOUT)
+}
+
+const MIN_CONNECT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Open an HTTP session that carries the stored browser-OAuth token (#1391).
 /// The token is attached per request and refreshed when it expires.
@@ -195,7 +212,16 @@ fn http_headers(
 /// may still be running) or a higher-level failure. Errors here are produced by
 /// this module, so the match is on our own stable strings.
 fn is_broken_connection(err: &str) -> bool {
-    !err.contains("timed out")
+    !is_timeout_error(err)
+}
+
+/// Whether `err` is a request timeout rather than a broken transport. A timeout
+/// leaves the pooled session healthy: rmcp has already sent the downstream
+/// cancel notification, so evicting would kill a live child and force a full
+/// respawn on the next call. Matches both of our timeout wrappings and rmcp's
+/// `ServiceError::Timeout` display.
+fn is_timeout_error(err: &str) -> bool {
+    err.contains("timed out") || err.contains("request timeout after")
 }
 
 /// Flatten a downstream [`CallToolResult`] into plain text. Text blocks are
@@ -219,8 +245,8 @@ pub fn result_to_text(result: &CallToolResult) -> String {
 /// (`tools/call`). [`super::pool::acquire`] only returns a live session, so the
 /// request is never sent into a dead pipe. A failed call is **never** retried:
 /// a downstream tool may be non-idempotent, so re-issuing could double-execute a
-/// side effect. On any failure we evict the (now-suspect) session — the next
-/// call reopens cleanly — and surface the error for the caller to decide.
+/// side effect. A broken transport is evicted; request timeouts retain the
+/// healthy session after the downstream cancellation is sent.
 pub async fn proxy_call(
     transport: &ResolvedTransport,
     tool: &str,
@@ -231,6 +257,12 @@ pub async fn proxy_call(
 }
 
 /// Proxy a single tool call and optionally forward request-scoped MCP progress.
+///
+/// On a broken transport the session is evicted — the next call reopens
+/// cleanly. A request timeout keeps the pooled session: rmcp has already sent
+/// the downstream cancel notification and the transport itself is still
+/// healthy; evicting here used to kill a live child on every slow call and
+/// forced a full respawn (spawn + handshake + pin hash) on the next one.
 pub async fn proxy_call_with_progress(
     transport: &ResolvedTransport,
     tool: &str,
@@ -239,11 +271,16 @@ pub async fn proxy_call_with_progress(
     progress: Option<ProgressCallback>,
 ) -> Result<CallToolResult, String> {
     let key = super::pool::key(transport);
-    let service = super::pool::acquire(transport, timeout).await?;
-    let result = call_tool_on_with_progress(&service, tool, arguments, timeout, progress).await;
+    let session = super::pool::acquire(transport, timeout).await?;
+    let result =
+        call_tool_on_with_progress(&session.service, tool, arguments, timeout, progress).await;
     if let Err(ref error) = result {
-        tracing::error!(pool_key = key, tool_name = tool, error = %error, "downstream MCP tool call failed; session will be evicted without retry");
-        super::pool::evict(key);
+        if is_timeout_error(error) {
+            tracing::warn!(pool_key = key, tool_name = tool, error = %error, "downstream MCP tool call timed out; pooled session kept alive");
+        } else {
+            tracing::error!(pool_key = key, tool_name = tool, error = %error, "downstream MCP tool call failed; session evicted");
+            super::pool::evict(key);
+        }
     }
     result
 }
@@ -257,14 +294,15 @@ pub async fn fetch_tools(
     timeout: Duration,
 ) -> Result<Vec<Tool>, String> {
     let key = super::pool::key(transport);
-    let service = super::pool::acquire(transport, timeout).await?;
-    match list_tools_on(&service, timeout).await {
+    let session = super::pool::acquire(transport, timeout).await?;
+    match list_tools_on(&session.service, timeout).await {
         Ok(tools) => Ok(tools),
         Err(e) => {
-            super::pool::evict(key);
             if is_broken_connection(&e) {
-                let service = super::pool::acquire(transport, timeout).await?;
-                list_tools_on(&service, timeout).await
+                drop(session);
+                super::pool::evict(key);
+                let retry_session = super::pool::acquire(transport, timeout).await?;
+                list_tools_on(&retry_session.service, timeout).await
             } else {
                 Err(e)
             }
@@ -364,5 +402,24 @@ mod tests {
 
         assert!(!converted[&http::header::ACCEPT].is_sensitive());
         assert!(converted[&http::header::AUTHORIZATION].is_sensitive());
+    }
+
+    #[test]
+    fn timeouts_are_not_classified_as_broken_connections() {
+        // rmcp ServiceError::Timeout display, wrapped by our tools/call mapper.
+        let call_timeout = "downstream tools/call failed: request timeout after 30s";
+        // Our own tools/list timeout wrapping.
+        let list_timeout = "downstream tools/list timed out";
+        // A genuine transport failure.
+        let closed = "downstream tools/call failed: Transport closed";
+
+        assert!(is_timeout_error(call_timeout));
+        assert!(is_timeout_error(list_timeout));
+        assert!(!is_timeout_error(closed));
+        // Broken-connection classification must stay the negation: timeouts are
+        // never broken (the pooled session survives), everything else is.
+        assert!(!is_broken_connection(call_timeout));
+        assert!(!is_broken_connection(list_timeout));
+        assert!(is_broken_connection(closed));
     }
 }

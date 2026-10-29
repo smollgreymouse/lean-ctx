@@ -68,6 +68,7 @@ mod lsp_integration;
 mod mcp_fast_initialize_669;
 mod mcp_manifest_up_to_date;
 mod mcp_optout_281;
+mod mcp_pool_lifecycle;
 mod mcp_preinit_method_not_found_1454;
 #[path = "mcp_fast_initialize_669/process.rs"]
 mod mcp_process;

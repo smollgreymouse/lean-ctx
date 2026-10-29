@@ -245,6 +245,10 @@ pub(super) fn run_mcp_server() -> Result<()> {
 /// after the grace period: their threads die with the process, which holds no
 /// client-visible state at this point (transport closed, telemetry flushed).
 fn shutdown_runtime_bounded(rt: tokio::runtime::Runtime) {
+    // Release pooled downstream sessions first: dropping each one cancels its
+    // transport and closes the child's stdin, so pooled MCP servers shut down
+    // cleanly instead of being killed with the process.
+    crate::core::mcp_catalog::pool::clear();
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
 }
 
@@ -299,7 +303,7 @@ fn cleanup_orphan_mcp_processes() {
 #[cfg(unix)]
 fn is_orphan_mcp(pid: u32) -> bool {
     let Ok(output) = std::process::Command::new("ps")
-        .args(["-o", "ppid=,command=", "-p", &pid.to_string()])
+        .args(["-o", "ppid=,etimes=,command=", "-p", &pid.to_string()])
         .output()
     else {
         return false;
@@ -309,8 +313,20 @@ fn is_orphan_mcp(pid: u32) -> bool {
     if line.is_empty() {
         return false;
     }
+    if let Some(age) = orphan_age_secs(line)
+        && age < ORPHAN_MIN_AGE_SECS
+    {
+        return false;
+    }
     is_orphan_mcp_ps_line(line)
 }
+
+/// A lean-ctx process with `ppid=1` younger than this is more likely a
+/// daemonizing spawn wrapper's child that is still in use than a dead IDE's
+/// orphan; a fresh orphan dies on its own stdin EOF anyway. Give every
+/// process this long before treating it as an orphan.
+#[cfg(unix)]
+const ORPHAN_MIN_AGE_SECS: u64 = 60;
 
 #[cfg(unix)]
 fn is_orphan_mcp_ps_line(line: &str) -> bool {
@@ -324,12 +340,30 @@ fn is_orphan_mcp_ps_line(line: &str) -> bool {
         return false;
     }
 
+    is_orphan_mcp_command(command)
+}
+
+/// The command half of an orphan `ps` line: `ppid etimes command` when the
+/// caller fetched the age, or bare `command` for the legacy two-field form.
+#[cfg(unix)]
+fn is_orphan_mcp_command(command: &str) -> bool {
     let mut parts = command.split_whitespace();
-    let Some(exe) = parts.next() else {
+    let Some(mut exe) = parts.next() else {
         return false;
     };
     if !is_lean_ctx_executable(exe) {
-        return false;
+        // With the `ppid etimes command` form the first token is the elapsed
+        // seconds; skip it and re-check.
+        if exe.parse::<u64>().is_err() {
+            return false;
+        }
+        let Some(next) = parts.next() else {
+            return false;
+        };
+        exe = next;
+        if !is_lean_ctx_executable(exe) {
+            return false;
+        }
     }
 
     let mut first_arg = parts.next();
@@ -338,6 +372,14 @@ fn is_orphan_mcp_ps_line(line: &str) -> bool {
     }
 
     matches!(first_arg, None | Some("mcp"))
+}
+
+/// Elapsed-seconds field of a `ppid etimes command` line, if present.
+#[cfg(unix)]
+fn orphan_age_secs(line: &str) -> Option<u64> {
+    let (_, rest) = split_ppid_and_command(line)?;
+    let first = rest.split_whitespace().next()?;
+    first.parse::<u64>().ok()
 }
 
 #[cfg(unix)]
@@ -358,6 +400,12 @@ fn is_lean_ctx_executable(value: &str) -> bool {
 /// Spawns a background thread that monitors the parent process.
 /// If the parent dies (IDE closed without properly closing stdin),
 /// the MCP server exits cleanly to prevent orphan processes.
+///
+/// A parent-PID change within the startup grace window is treated as a
+/// daemonizing spawn wrapper (setsid / double-fork) that exits right after
+/// spawning — not as a dead IDE. Those wrappers are legitimate launchers; the
+/// stdio pipes are the real liveness signal from there on, so the watchdog
+/// stands down and the server lives until stdin EOF.
 fn spawn_parent_watchdog() {
     #[cfg(unix)]
     {
@@ -367,6 +415,7 @@ fn spawn_parent_watchdog() {
         if ppid <= 1 {
             return;
         }
+        let started = std::time::Instant::now();
         std::thread::Builder::new()
             .name("parent-watchdog".into())
             .spawn(move || {
@@ -377,23 +426,46 @@ fn spawn_parent_watchdog() {
                     let current_ppid = unsafe { libc::getppid() } as u32;
                     // On Unix, when the parent dies, ppid becomes 1 (init/systemd)
                     // or the subreaper PID. Either way, it changes from our original.
-                    if current_ppid != ppid || current_ppid <= 1 {
-                        tracing::info!(
-                            "[parent-watchdog] parent PID changed ({ppid} → {current_ppid}), \
-                             IDE likely closed — exiting to prevent orphan"
-                        );
-                        // Same flush set as the clean shutdown path (#550) — the
-                        // hand-rolled copy here used to miss the predictor + feedback.
-                        core::tool_lifecycle::flush_all();
-                        crate::cloud_sync::send_telemetry(
-                            core::telemetry_aggregate::SendTrigger::Exit,
-                        );
-                        std::process::exit(0);
+                    if current_ppid == ppid && current_ppid > 1 {
+                        continue;
                     }
+                    if started.elapsed() < parent_grace_window() {
+                        tracing::info!(
+                            "[parent-watchdog] parent PID changed within the grace window \
+                             ({ppid} → {current_ppid}) — treating as a spawn wrapper, \
+                             staying with the stdio connection"
+                        );
+                        return;
+                    }
+                    tracing::info!(
+                        "[parent-watchdog] parent PID changed ({ppid} → {current_ppid}), \
+                         IDE likely closed — exiting to prevent orphan"
+                    );
+                    // Same flush set as the clean shutdown path (#550) — the
+                    // hand-rolled copy here used to miss the predictor + feedback.
+                    core::tool_lifecycle::flush_all();
+                    crate::cloud_sync::send_telemetry(core::telemetry_aggregate::SendTrigger::Exit);
+                    // process::exit skips destructors, so release the pooled
+                    // downstream children explicitly: dropping each session
+                    // cancels its transport and closes the child's stdin.
+                    crate::core::mcp_catalog::pool::clear();
+                    std::process::exit(0);
                 }
             })
             .ok();
     }
+}
+
+/// How long after startup a parent-PID change is treated as a daemonizing
+/// spawn wrapper rather than a dead IDE. `LEAN_CTX_MCP_PARENT_GRACE_SECS`
+/// overrides it; `0` restores the old change-at-any-time behavior.
+#[cfg(unix)]
+fn parent_grace_window() -> std::time::Duration {
+    let secs = std::env::var("LEAN_CTX_MCP_PARENT_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(15);
+    std::time::Duration::from_secs(secs)
 }
 
 pub(super) fn resolve_worker_threads(parallelism: usize) -> usize {
@@ -557,6 +629,15 @@ mod tests {
         assert!(is_orphan_mcp_ps_line(
             "1 /opt/homebrew/bin/lean-ctx (deleted) mcp"
         ));
+        // `ppid etimes command` form from the age-aware sweep.
+        assert!(is_orphan_mcp_ps_line(
+            "1 120 /opt/homebrew/bin/lean-ctx mcp"
+        ));
+        assert_eq!(
+            orphan_age_secs("1 120 /opt/homebrew/bin/lean-ctx mcp"),
+            Some(120)
+        );
+        assert_eq!(orphan_age_secs("1 /opt/homebrew/bin/lean-ctx mcp"), None);
 
         assert!(!is_orphan_mcp_ps_line("99 /Users/me/.local/bin/lean-ctx"));
         assert!(!is_orphan_mcp_ps_line(
@@ -571,5 +652,18 @@ mod tests {
         assert!(!is_orphan_mcp_ps_line(
             "1 /usr/bin/sandbox-exec -f /tmp/seatbelt.sb /Users/me/.local/bin/lean-ctx proxy start --port=4444"
         ));
+        assert!(!is_orphan_mcp_ps_line(
+            "1 42 /usr/bin/sandbox-exec /Users/me/.local/bin/lean-ctx proxy start"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn young_ppid1_processes_are_not_treated_as_orphans() {
+        // A daemonizing wrapper's child is alive and in use; the age guard in
+        // `is_orphan_mcp` keeps the sweep from killing it at the next start.
+        let line = "1 5 /opt/homebrew/bin/lean-ctx mcp";
+        assert_eq!(orphan_age_secs(line), Some(5));
+        assert!(orphan_age_secs(line).unwrap() < ORPHAN_MIN_AGE_SECS);
     }
 }

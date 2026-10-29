@@ -18,12 +18,73 @@
 //!   make the pair atomic — nothing short of holding the file open would — but
 //!   it removes the ambiguity a pin exists to remove.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use sha2::{Digest, Sha256};
 
 use crate::core::pathjail;
+
+/// How long a verified pin digest may be reused without re-hashing. Every
+/// pool reopen used to re-read and re-hash the whole executable, so a big
+/// node binary paid a full SHA-256 per respawn. Keyed by (mtime, size) and
+/// bounded by this TTL: a replaced binary is re-verified at most this late.
+const PIN_CACHE_TTL: Duration = Duration::from_mins(1);
+const PIN_CACHE_LIMIT: usize = 64;
+
+struct CachedPin {
+    mtime: SystemTime,
+    size: u64,
+    digest: String,
+    at: Instant,
+}
+
+fn pin_cache() -> &'static Mutex<HashMap<PathBuf, CachedPin>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedPin>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn verified_digest(path: &Path) -> Result<String, String> {
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| format!("cannot stat pinned binary {}: {e}", path.display()))?;
+    let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let size = meta.len();
+    {
+        let cache = pin_cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = cache.get(path)
+            && entry.mtime == mtime
+            && entry.size == size
+            && entry.at.elapsed() < PIN_CACHE_TTL
+        {
+            return Ok(entry.digest.clone());
+        }
+    }
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("cannot read pinned binary {}: {e}", path.display()))?;
+    let digest = hex(&Sha256::digest(&bytes));
+    let mut cache = pin_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= PIN_CACHE_LIMIT {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        CachedPin {
+            mtime,
+            size,
+            digest: digest.clone(),
+            at: Instant::now(),
+        },
+    );
+    Ok(digest)
+}
 
 /// Resolve `command` the way the spawned child would, honouring a `PATH`
 /// override in the server's own environment.
@@ -74,10 +135,7 @@ pub(crate) async fn verify(
     }
 
     let path = resolve(command, env)?;
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|e| format!("cannot read pinned binary {}: {e}", path.display()))?;
-    let actual = hex(&Sha256::digest(&bytes));
+    let actual = verified_digest(&path).await?;
 
     if actual.eq_ignore_ascii_case(expected) {
         Ok(Some(path))
@@ -108,6 +166,24 @@ mod tests {
         let env = BTreeMap::new();
         assert_eq!(verify("anything", &env, "").await.unwrap(), None);
         assert_eq!(verify("anything", &env, "   ").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_tampered_binary_fails_the_pin_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = write_exe(tmp.path(), "srv", b"payload");
+        let digest = hex(&Sha256::digest(b"payload"));
+
+        let got = verify(exe.to_str().unwrap(), &BTreeMap::new(), &digest)
+            .await
+            .expect("first verify populates the cache and matches");
+        assert!(got.is_some());
+
+        // Any change to the file (size and/or mtime move) must invalidate the
+        // cached digest and fail the pin — the cache may never mask tampering.
+        std::fs::write(&exe, b"payload-tampered").unwrap();
+        let got = verify(exe.to_str().unwrap(), &BTreeMap::new(), &digest).await;
+        assert!(got.is_err(), "tampered binary must fail the pin");
     }
 
     #[tokio::test]

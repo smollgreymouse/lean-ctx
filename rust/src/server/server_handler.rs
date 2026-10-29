@@ -8,6 +8,47 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+const MAX_SERVER_ICON_BYTES: u64 = 2 * 1024 * 1024;
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+
+fn server_implementation() -> Implementation {
+    server_implementation_from_path(std::env::var_os("HARR_MCP_ICON_PATH").as_deref())
+}
+
+fn server_implementation_from_path(path: Option<&std::ffi::OsStr>) -> Implementation {
+    let implementation = Implementation::new("lean-ctx", env!("CARGO_PKG_VERSION"));
+    let Some(path) = path else {
+        return implementation;
+    };
+    let Ok(file) = std::fs::File::open(path) else {
+        return implementation;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= MAX_SERVER_ICON_BYTES)
+    {
+        return implementation;
+    }
+    let mut bytes = Vec::new();
+    use std::io::Read as _;
+    if std::io::Read::take(file, MAX_SERVER_ICON_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_SERVER_ICON_BYTES
+        || !bytes.starts_with(PNG_SIGNATURE)
+    {
+        return implementation;
+    }
+    use base64::Engine as _;
+    let source = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    );
+    implementation.with_icons(vec![
+        rmcp::model::Icon::new(source).with_mime_type("image/png"),
+    ])
+}
+
 /// rmcp moves wire `_meta` into RequestContext before calling the handler.
 /// Retain the existing guarded dispatcher and progress-token readers as owners.
 fn restore_tool_meta(request: &mut CallToolRequestParams, transport_meta: &rmcp::model::Meta) {
@@ -16,6 +57,42 @@ fn restore_tool_meta(request: &mut CallToolRequestParams, transport_meta: &rmcp:
             .meta
             .get_or_insert_with(rmcp::model::Meta::new)
             .extend(transport_meta.clone());
+    }
+}
+
+#[cfg(test)]
+mod icon_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn icon_metadata_is_optional_and_initialize_serializes_the_embedded_png() {
+        let missing = server_implementation_from_path(None);
+        assert_eq!(missing.name, "lean-ctx");
+        assert!(missing.icons.is_none());
+
+        let dir = tempfile::tempdir().unwrap();
+        let icon_path = dir.path().join("icon.png");
+        std::fs::write(&icon_path, PNG_SIGNATURE).unwrap();
+        let implementation = server_implementation_from_path(Some(icon_path.as_os_str()));
+        let initialize =
+            InitializeResult::new(ServerCapabilities::default()).with_server_info(implementation);
+        let json = serde_json::to_value(initialize).unwrap();
+        let source = json["serverInfo"]["icons"][0]["src"].as_str().unwrap();
+        assert_eq!(source, "data:image/png;base64,iVBORw0KGgo=");
+        assert_eq!(json["serverInfo"]["icons"][0]["mimeType"], "image/png");
+        assert_eq!(json["serverInfo"]["name"], "lean-ctx");
+    }
+
+    #[test]
+    fn invalid_png_icon_falls_back_without_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon_path = dir.path().join("invalid.png");
+        std::fs::write(&icon_path, b"not a png").unwrap();
+        assert!(
+            server_implementation_from_path(Some(icon_path.as_os_str()))
+                .icons
+                .is_none()
+        );
     }
 }
 
@@ -99,7 +176,7 @@ impl ServerHandler for LeanCtxServer {
         let instructions = crate::instructions::build_instructions(CrpMode::effective());
 
         InitializeResult::new(capabilities)
-            .with_server_info(Implementation::new("lean-ctx", env!("CARGO_PKG_VERSION")))
+            .with_server_info(server_implementation())
             .with_instructions(instructions)
     }
 
@@ -363,8 +440,7 @@ impl ServerHandler for LeanCtxServer {
 
         let capabilities = server_capabilities(client_caps.resources, client_caps.prompts);
 
-        let result = InitializeResult::new(capabilities)
-            .with_server_info(Implementation::new("lean-ctx", env!("CARGO_PKG_VERSION")));
+        let result = InitializeResult::new(capabilities).with_server_info(server_implementation());
 
         // GH #1447: Antigravity/Gemini CLI disconnect when the initialize
         // response contains `instructions`. The MCP spec marks it optional,
@@ -954,13 +1030,13 @@ mod tests {
     #[test]
     fn strict_workspace_legacy_tool_surface_is_explicit_opt_in() {
         let _guard = crate::core::data_dir::test_env_lock();
-        let _unset = crate::setup::EnvVarGuard::remove(STRICT_WORKSPACE_LEGACY_TOOLS_ENV);
+        let _disabled = crate::setup::EnvVarGuard::set(STRICT_WORKSPACE_LEGACY_TOOLS_ENV, "0");
         assert!(strict_workspace_tool_allowed("ctx_read"));
         assert!(!strict_workspace_tool_allowed("ctx_glob"));
         assert!(!strict_workspace_tool_allowed("ctx_shell"));
         assert!(!strict_workspace_tool_allowed("ctx_tools"));
         assert!(!strict_workspace_tool_allowed("ctx_call"));
-        drop(_unset);
+        drop(_disabled);
 
         let _enabled = crate::setup::EnvVarGuard::set(STRICT_WORKSPACE_LEGACY_TOOLS_ENV, "1");
         for tool in [

@@ -52,7 +52,10 @@ pub(crate) fn check() -> IntegrityReport {
 pub(crate) fn origin_line() -> String {
     let report = check();
     if let Some(build) = option_env!("HARR_BUILD_ID") {
-        format!("lean-ctx {} (Harr build {}, {})", report.version, build, report.repo)
+        format!(
+            "lean-ctx {} (Harr build {}, {})",
+            report.version, build, report.repo
+        )
     } else if report.seed_ok && report.origin_ok {
         format!("lean-ctx {} (official, {})", report.version, report.repo)
     } else {
