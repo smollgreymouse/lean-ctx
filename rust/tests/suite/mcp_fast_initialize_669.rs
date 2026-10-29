@@ -20,14 +20,15 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
 use super::mcp_process as process;
+use base64::Engine as _;
 
 /// Generous for CI (debug binary, cold cache, shared runners) yet far below
 /// the pathological regressions this guards against (30s crash-loop backoff,
 /// TCP timeouts, N×ps orphan sweeps in front of the handshake).
 const INITIALIZE_DEADLINE: Duration = Duration::from_secs(10);
-const ICON_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pS8AAAAASUVORK5CYII=";
+const ICON_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pS8AAAAASUVORK5CYII=";
 
 struct TestEnv {
     _tmp: tempfile::TempDir,

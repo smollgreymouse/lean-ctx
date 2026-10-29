@@ -425,6 +425,9 @@ mod tests {
 
         assert_eq!(old_session_count.load(Ordering::Relaxed), 0);
         assert_eq!(replacement_count.load(Ordering::Relaxed), 1);
-        assert!(!owns_current_session(&replacement_count, &old_session_count));
+        assert!(!owns_current_session(
+            &replacement_count,
+            &old_session_count
+        ));
     }
 }
