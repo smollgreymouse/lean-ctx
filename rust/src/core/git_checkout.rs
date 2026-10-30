@@ -268,24 +268,64 @@ fn opaque_key(parts: &[&Path]) -> String {
 /// but Git may reuse that path after a remove/re-add. File identity distinguishes
 /// those generations without writing marker files into Git's private metadata.
 fn checkout_generation(path: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path).ok()?;
         return Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()));
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
+        };
+
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: the wide path is NUL-terminated and remains alive for the call.
+        // The returned handle is closed on every successful open path below.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: handle is valid and info points to writable storage with the
+        // exact Win32 structure layout expected by the API.
+        let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
+        // SAFETY: handle was returned by CreateFileW and is closed exactly once.
+        unsafe {
+            CloseHandle(handle);
+        }
+        if ok == 0 {
+            return None;
+        }
+
+        let file_index = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
         return Some(format!(
             "windows:{}:{}",
-            metadata.volume_serial_number()?,
-            metadata.file_index()?
+            info.dwVolumeSerialNumber, file_index
         ));
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = metadata;
+        let _ = path;
         None
     }
 }
