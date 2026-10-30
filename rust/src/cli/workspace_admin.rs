@@ -27,6 +27,7 @@ fn verify_same_process_isolation() -> Result<(), String> {
                 primary_root: a1.clone(),
                 additional_roots: vec![b1.clone()],
                 revision: 3,
+                authority_fingerprint: None,
             };
             REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
                 barrier_a.wait();
@@ -42,6 +43,7 @@ fn verify_same_process_isolation() -> Result<(), String> {
                 primary_root: c2.clone(),
                 additional_roots: Vec::new(),
                 revision: 9,
+                authority_fingerprint: None,
             };
             REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
                 barrier.wait();
@@ -155,6 +157,21 @@ pub(crate) fn run(args: &[String]) -> i32 {
         unsafe { std::env::set_var("LEAN_CTX_HEADLESS", "1") };
     }
     #[cfg(debug_assertions)]
+    if args.first().map(String::as_str) == Some("self-test-worktree-lifecycle") {
+        return match crate::server::workspace_store::debug_worktree_lifecycle_self_test() {
+            Ok(()) => {
+                println!(
+                    "PASS: Workspace worktree remove/move/recreate lifecycle stays fail-closed"
+                );
+                0
+            }
+            Err(error) => {
+                eprintln!("FAIL: {error}");
+                1
+            }
+        };
+    }
+    #[cfg(debug_assertions)]
     if args.first().map(String::as_str) == Some("self-test-long-lived-mcp") {
         return match verify_long_lived_mcp_sessions() {
             Ok(()) => {
@@ -260,7 +277,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     }
     let Some(operation) = args.first().map(String::as_str) else {
         eprintln!(
-            "Usage: lean-ctx workspace-admin <create|show|add|remove> <absolute-store-path> [root] [expected-revision]"
+            "Usage: lean-ctx workspace-admin <create|show|reconcile|add|remove> <absolute-store-path> [root] [expected-revision]"
         );
         return 2;
     };
@@ -270,11 +287,13 @@ pub(crate) fn run(args: &[String]) -> i32 {
     };
     let path = Path::new(store);
     let result = match operation {
-        "show" if args.len() == 2 => crate::server::workspace_store::load(path),
+        "show" if args.len() == 2 => crate::server::workspace_store::admin_view(path),
         "create" if args.len() == 3 => {
             crate::server::workspace_store::initialized_store(path, &args[2])
-                .and_then(|_| crate::server::workspace_store::load(path))
+                .and_then(|_| crate::server::workspace_store::admin_view(path))
         }
+        "reconcile" if args.len() == 2 => crate::server::workspace_store::reconcile_metadata(path)
+            .and_then(|_| crate::server::workspace_store::admin_view(path)),
         "add" | "remove" if args.len() == 4 => {
             let revision = match args[3].parse::<u64>() {
                 Ok(revision) if revision > 0 => revision,
@@ -284,6 +303,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
                 }
             };
             crate::server::workspace_store::mutate(path, revision, &args[2], operation == "add")
+                .and_then(|_| crate::server::workspace_store::admin_view(path))
         }
         _ => {
             eprintln!("Invalid workspace-admin operation or arguments");
@@ -611,6 +631,7 @@ fn verify_dense_namespace_is_workspace_scoped() -> Result<(), String> {
         primary_root: root.path().to_path_buf(),
         additional_roots: Vec::new(),
         revision,
+        authority_fingerprint: Some(format!("test-authority-{id}-{revision}")),
     };
     let data = root.path().join("data");
     std::fs::create_dir(&data).map_err(|e| e.to_string())?;

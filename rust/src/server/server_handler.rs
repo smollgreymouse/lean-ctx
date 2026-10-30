@@ -848,73 +848,174 @@ impl ServerHandler for LeanCtxServer {
                 ));
             }
             self.resolve_roots_once().await;
-            let session = self.session.read().await;
-            let primary = session.project_root.as_deref().and_then(|p| {
-                let path = std::path::PathBuf::from(p).canonicalize().ok()?;
-                (path.is_dir() && !crate::core::pathutil::is_broad_or_unsafe_root(&path))
-                    .then(|| path.to_string_lossy().into_owned())
-            });
-            let Some(primary) = primary else {
-                return Err(ErrorData::invalid_params(
-                    "Strict workspace authority unavailable",
-                    None,
-                ));
-            };
-            let roots: Vec<String> = session
-                .client_workspace_roots
-                .iter()
-                .filter_map(|p| {
-                    let path = std::path::PathBuf::from(p).canonicalize().ok()?;
-                    (path.is_dir()
-                        && !crate::core::pathutil::is_broad_or_unsafe_root(&path)
-                        && path.to_string_lossy() != primary)
-                        .then(|| path.to_string_lossy().into_owned())
-                })
-                .collect();
-            drop(session);
-            let stored = if self.workspace_store_path.is_some() {
-                let file = crate::server::workspace_store::load(
-                    self.workspace_store_path.as_deref().expect("checked"),
+            let stored = if let Some(store_path) = self.workspace_store_path.as_deref() {
+                Some(
+                    crate::server::workspace_store::load_resolved(store_path).map_err(|_| {
+                        ErrorData::invalid_params("Workspace store unavailable", None)
+                    })?,
                 )
-                .map_err(|_| ErrorData::invalid_params("Workspace store unavailable", None))?;
-                if file.primary != primary {
-                    return Err(ErrorData::invalid_params(
-                        "Workspace binding mismatch",
-                        None,
-                    ));
-                }
-                Some(file)
             } else {
                 None
             };
-            let roots = stored
+
+            let (primary, roots, configured_roots) = if let Some(resolved) = stored.as_ref() {
+                let active_primary = resolved
+                    .active_primary()
+                    .map(|path| path.to_string_lossy().into_owned());
+                let active_roots = resolved
+                    .active_additional()
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+
+                // When authority exists, the session must be rooted at exactly
+                // the authenticated checkout. When the primary is unavailable,
+                // keep diagnostics alive but do not invent a fallback root.
+                if let Some(ref expected_primary) = active_primary {
+                    let session_primary = self
+                        .session
+                        .read()
+                        .await
+                        .project_root
+                        .as_deref()
+                        .and_then(|path| std::path::PathBuf::from(path).canonicalize().ok())
+                        .map(|path| path.to_string_lossy().into_owned());
+                    if session_primary.as_deref() != Some(expected_primary.as_str()) {
+                        return Err(ErrorData::invalid_params(
+                            "Workspace binding mismatch",
+                            None,
+                        ));
+                    }
+                }
+                (
+                    active_primary,
+                    active_roots,
+                    resolved.configured.additional.clone(),
+                )
+            } else {
+                let session = self.session.read().await;
+                let primary = session.project_root.as_deref().and_then(|p| {
+                    let path = std::path::PathBuf::from(p).canonicalize().ok()?;
+                    (path.is_dir() && !crate::core::pathutil::is_broad_or_unsafe_root(&path))
+                        .then(|| path.to_string_lossy().into_owned())
+                });
+                let Some(primary) = primary else {
+                    return Err(ErrorData::invalid_params(
+                        "Strict workspace authority unavailable",
+                        None,
+                    ));
+                };
+                let roots: Vec<String> = session
+                    .client_workspace_roots
+                    .iter()
+                    .filter_map(|p| {
+                        let path = std::path::PathBuf::from(p).canonicalize().ok()?;
+                        (path.is_dir()
+                            && !crate::core::pathutil::is_broad_or_unsafe_root(&path)
+                            && path.to_string_lossy() != primary)
+                            .then(|| path.to_string_lossy().into_owned())
+                    })
+                    .collect();
+                (Some(primary), roots.clone(), roots)
+            };
+            let root_status = stored.as_ref().map(|resolved| {
+                resolved
+                    .additional
+                    .iter()
+                    .map(|status| {
+                        let state = match status.state {
+                            crate::server::workspace_store::WorkspaceRootState::Active => "active",
+                            crate::server::workspace_store::WorkspaceRootState::Moved => "moved",
+                            crate::server::workspace_store::WorkspaceRootState::Missing => "missing",
+                            crate::server::workspace_store::WorkspaceRootState::Unavailable => {
+                                "unavailable"
+                            }
+                            crate::server::workspace_store::WorkspaceRootState::Unsafe => "unsafe",
+                            crate::server::workspace_store::WorkspaceRootState::IdentityMismatch => {
+                                "identity-mismatch"
+                            }
+                            crate::server::workspace_store::WorkspaceRootState::SiblingWorktree => {
+                                "sibling-worktree"
+                            }
+                        };
+                        serde_json::json!({
+                            "path": status.configured,
+                            "status": state,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let primary_status = stored
                 .as_ref()
-                .map(|value| value.additional.clone())
-                .unwrap_or(roots);
+                .map(|resolved| match resolved.primary.state {
+                    crate::server::workspace_store::WorkspaceRootState::Active => "active",
+                    crate::server::workspace_store::WorkspaceRootState::Moved => "moved",
+                    crate::server::workspace_store::WorkspaceRootState::Missing => "missing",
+                    crate::server::workspace_store::WorkspaceRootState::Unavailable => {
+                        "unavailable"
+                    }
+                    crate::server::workspace_store::WorkspaceRootState::Unsafe => "unsafe",
+                    crate::server::workspace_store::WorkspaceRootState::IdentityMismatch => {
+                        "identity-mismatch"
+                    }
+                    crate::server::workspace_store::WorkspaceRootState::SiblingWorktree => {
+                        "sibling-worktree"
+                    }
+                });
+            let configured_primary = stored
+                .as_ref()
+                .map(|resolved| resolved.configured.primary.clone());
             let mut registry = self.workspace_registry.write().await;
-            registry.update(primary.clone(), roots.clone());
+            if let Some(ref active_primary) = primary {
+                registry.update(active_primary.clone(), roots.clone());
+            }
             let identity = registry.id.clone();
             let revision = registry.revision;
             drop(registry);
+
+            let primary_unavailable = stored.is_some() && primary.is_none();
             let value = serde_json::json!({
-                "workspaceId": stored.as_ref().map(|v| v.id.clone()).unwrap_or(identity),
+                "workspaceId": stored.as_ref().map(|v| v.configured.id.clone()).unwrap_or(identity),
                 "schemaVersion": 1,
                 "primaryRoot": primary,
+                "configuredPrimaryRoot": configured_primary,
+                "primaryStatus": primary_status,
                 "additionalRoots": roots,
+                "configuredAdditionalRoots": configured_roots,
+                "rootStatus": root_status,
+                "authorityFingerprint": stored.as_ref().map(|v| v.authority_fingerprint.clone()),
                 "rootSource": if stored.is_some() { "launcher-store" } else { "mcp-roots-list" },
-                "revision": stored.as_ref().map(|v| v.revision).unwrap_or(revision),
+                "revision": stored.as_ref().map(|v| v.configured.revision).unwrap_or(revision),
                 "mutable": stored.is_some(),
-                "authenticatedWorkspace": stored.is_some(),
+                "authenticatedWorkspace": stored.is_some() && !primary_unavailable,
                 "legacyGlobalRootsInherited": false,
             });
             let response = match request.name.as_ref() {
                 "ctx_workspace_list" => serde_json::json!({"schemaVersion":1,"workspaces":[value]}),
-                "ctx_workspace_diagnose" => serde_json::json!({
-                    "schemaVersion":1,
-                    "workspace":value,
-                    "issues":["workspace_identity_not_authenticated", "mutation_api_unavailable"],
-                    "status": if stored.is_some() { "launcher_bound" } else { "read_only_untrusted_roots" },
-                }),
+                "ctx_workspace_diagnose" => {
+                    let (issues, status) = if primary_unavailable {
+                        (
+                            vec!["primary_authority_unavailable"],
+                            "launcher_bound_degraded",
+                        )
+                    } else if stored.is_some() {
+                        (Vec::<&str>::new(), "launcher_bound")
+                    } else {
+                        (
+                            vec![
+                                "workspace_identity_not_authenticated",
+                                "mutation_api_unavailable",
+                            ],
+                            "read_only_untrusted_roots",
+                        )
+                    };
+                    serde_json::json!({
+                        "schemaVersion":1,
+                        "workspace":value,
+                        "issues":issues,
+                        "status":status,
+                    })
+                }
                 _ => value,
             };
             return Ok(CallToolResult::success(vec![

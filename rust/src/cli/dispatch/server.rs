@@ -88,9 +88,22 @@ pub(super) fn run_mcp_server() -> Result<()> {
 
     let mut server = if let Some(store_path) = std::env::var_os("LEAN_CTX_WORKSPACE_FILE") {
         let store_path = std::path::PathBuf::from(store_path);
-        let store =
-            crate::server::workspace_store::load(&store_path).map_err(anyhow::Error::msg)?;
-        tools::LeanCtxServer::new_with_project_root(Some(&store.primary))
+        crate::server::workspace_store::reconcile_metadata(&store_path)
+            .map_err(anyhow::Error::msg)?;
+        let resolved = crate::server::workspace_store::load_resolved(&store_path)
+            .map_err(anyhow::Error::msg)?;
+        if let Some(primary) = resolved.active_primary() {
+            tools::LeanCtxServer::new_with_project_root(Some(&primary.to_string_lossy()))
+        } else {
+            tracing::warn!(
+                configured_primary = %resolved.configured.primary,
+                "Workspace primary root is unavailable; starting MCP in diagnostic-only strict mode"
+            );
+            // Keep the protocol/control surface alive so the client can inspect
+            // and repair the Workspace. Strict request admission below remains
+            // fail-closed because no authenticated WorkspaceSnapshot can be built.
+            tools::LeanCtxServer::new_with_project_root(None)
+        }
     } else {
         tools::create_server()
     };

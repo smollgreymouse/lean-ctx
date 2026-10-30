@@ -56,6 +56,10 @@ pub(crate) struct WorkspaceSnapshot {
     pub(crate) primary_root: PathBuf,
     pub(crate) additional_roots: Vec<PathBuf>,
     pub(crate) revision: u64,
+    /// Effective authority, including filesystem availability and Git checkout
+    /// identity. Unlike the persisted revision, this changes when a root is
+    /// externally removed, moved, replaced, or otherwise becomes unavailable.
+    pub(crate) authority_fingerprint: Option<String>,
 }
 
 impl WorkspaceSnapshot {

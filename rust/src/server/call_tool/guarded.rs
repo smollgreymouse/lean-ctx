@@ -307,27 +307,26 @@ impl LeanCtxServer {
                             std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
                         let snapshot = if strict && self.workspace_store_path.is_some() {
                             let state = self.session.read().await;
-                            let store = self
-                                .workspace_store_path
-                                .as_deref()
-                                .and_then(|path| crate::server::workspace_store::load(path).ok());
-                            store.and_then(|store| {
-                                let primary =
+                            let resolved = self.workspace_store_path.as_deref().and_then(|path| {
+                                crate::server::workspace_store::load_resolved(path).ok()
+                            });
+                            resolved.and_then(|resolved| {
+                                let primary = resolved.active_primary()?.to_path_buf();
+                                let session_primary =
                                     std::path::PathBuf::from(state.project_root.as_ref()?)
                                         .canonicalize()
                                         .ok()?;
-                                if primary.to_string_lossy() != store.primary {
+                                if session_primary != primary {
                                     return None;
                                 }
                                 Some(crate::core::policy::runtime::WorkspaceSnapshot {
-                                    workspace_id: Some(store.id.clone()),
+                                    workspace_id: Some(resolved.configured.id.clone()),
                                     primary_root: primary,
-                                    additional_roots: store
-                                        .additional
-                                        .into_iter()
-                                        .map(std::path::PathBuf::from)
-                                        .collect(),
-                                    revision: store.revision,
+                                    additional_roots: resolved.active_additional(),
+                                    revision: resolved.configured.revision,
+                                    authority_fingerprint: Some(
+                                        resolved.authority_fingerprint.clone(),
+                                    ),
                                 })
                             })
                         } else if strict {
@@ -358,6 +357,7 @@ impl LeanCtxServer {
                                     primary_root,
                                     additional_roots,
                                     revision: 0,
+                                    authority_fingerprint: None,
                                 })
                             })
                         } else {
@@ -383,6 +383,9 @@ impl LeanCtxServer {
                             crate::core::context_admission::capture::AdmissionCapture::new();
                         let tool_name = request.name.to_string();
                         let expected_revision = snapshot.as_ref().map(|s| s.revision);
+                        let expected_authority = snapshot
+                            .as_ref()
+                            .and_then(|s| s.authority_fingerprint.clone());
                         let result = crate::core::context_admission::capture::ADMISSIONS
                             .scope(
                                 Some(admissions.clone()),
@@ -404,13 +407,16 @@ impl LeanCtxServer {
                         // produced with an old workspace revision. Also fail closed
                         // if the backing store disappears or becomes invalid.
                         if self.workspace_store_path.is_some() {
-                            let current = crate::server::workspace_store::load(
+                            let current = crate::server::workspace_store::load_resolved(
                                 self.workspace_store_path.as_deref().expect("checked"),
                             )
                             .map_err(|_| {
                                 ErrorData::internal_error("Workspace authority revoked", None)
                             })?;
-                            if expected_revision != Some(current.revision) {
+                            if expected_revision != Some(current.configured.revision)
+                                || expected_authority.as_deref()
+                                    != Some(current.authority_fingerprint.as_str())
+                            {
                                 return Err(ErrorData::internal_error(
                                     "Workspace changed during request",
                                     None,

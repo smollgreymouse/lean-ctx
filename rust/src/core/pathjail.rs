@@ -833,6 +833,7 @@ mod tests {
                     primary_root: a1.clone(),
                     additional_roots: vec![b_root1.clone()],
                     revision: 7,
+                    authority_fingerprint: None,
                 };
                 crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
                     b1.wait();
@@ -849,6 +850,7 @@ mod tests {
                     primary_root: c2.clone(),
                     additional_roots: vec![],
                     revision: 3,
+                    authority_fingerprint: None,
                 };
                 crate::core::policy::runtime::REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
                     b2.wait();
@@ -883,12 +885,14 @@ mod tests {
             primary_root: a.canonicalize().unwrap(),
             additional_roots: vec![b.canonicalize().unwrap()],
             revision: 1,
+            authority_fingerprint: None,
         };
         let snap_c = crate::core::policy::runtime::WorkspaceSnapshot {
             workspace_id: None,
             primary_root: c.canonicalize().unwrap(),
             additional_roots: Vec::new(),
             revision: 9,
+            authority_fingerprint: None,
         };
         let check = |snapshot: crate::core::policy::runtime::WorkspaceSnapshot,
                      allow: &std::path::Path,

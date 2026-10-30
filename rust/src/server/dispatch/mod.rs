@@ -650,16 +650,26 @@ impl LeanCtxServer {
     ) -> Result<ToolOutput, ErrorData> {
         match joined {
             Ok(inner) => inner,
+            Err(join_err) if join_err.is_cancelled() => {
+                tracing::warn!(tool = name, "tool handler was cancelled before completion");
+                Err(ErrorData::internal_error(
+                    format!(
+                        "tool '{name}' was cancelled before completion. The MCP server is still \
+                         running — retry the request."
+                    ),
+                    None,
+                ))
+            }
             Err(join_err) => {
                 tracing::error!(
                     tool = name,
                     is_panic = join_err.is_panic(),
-                    "tool handler did not complete (panic isolated on the blocking pool)"
+                    "tool handler panicked; panic isolated on the blocking pool"
                 );
                 Err(ErrorData::internal_error(
                     format!(
-                        "tool '{name}' failed unexpectedly. The MCP server is still running \
-                         — retry or use a different approach."
+                        "tool '{name}' handler panicked. The MCP server is still running — retry \
+                         or use a different approach."
                     ),
                     None,
                 ))
@@ -889,11 +899,35 @@ mod tests {
     async fn handler_panic_becomes_error_not_crash() {
         let join: tokio::task::JoinHandle<Result<ToolOutput, ErrorData>> =
             tokio::task::spawn_blocking(|| panic!("simulated handler panic"));
-        let result = LeanCtxServer::watchdog_join("mock", join, Some(Duration::from_secs(5))).await;
+        let error =
+            match LeanCtxServer::watchdog_join("mock", join, Some(Duration::from_secs(5))).await {
+                Ok(_) => panic!("panic must become an MCP error"),
+                Err(error) => error,
+            };
         assert!(
-            result.is_err(),
-            "a handler panic must surface as an error; the server process survives"
+            error.message.contains("handler panicked"),
+            "panic and cancellation must remain diagnostically distinct: {}",
+            error.message
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handler_cancellation_is_not_misreported_as_panic() {
+        let join: tokio::task::JoinHandle<Result<ToolOutput, ErrorData>> = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok(ToolOutput::simple("unreachable".to_string()))
+        });
+        join.abort();
+        let error = match LeanCtxServer::unwrap_join("mock", join.await) {
+            Ok(_) => panic!("cancelled handler must become an MCP error"),
+            Err(error) => error,
+        };
+        assert!(
+            error.message.contains("cancelled before completion"),
+            "cancellation must not be reported as a panic: {}",
+            error.message
+        );
+        assert!(!error.message.contains("panicked"));
     }
 
     /// #712: a typo'd tool name must return a "did you mean" hint from the

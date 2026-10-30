@@ -37,9 +37,16 @@ fn namespace_seed(project_root: &Path) -> String {
         .ok()
         .flatten()
         .and_then(|snapshot| {
-            snapshot
-                .workspace_id
-                .map(|id| format!("|workspace:{id}|revision:{}", snapshot.revision))
+            snapshot.workspace_id.map(|id| {
+                let authority = snapshot
+                    .authority_fingerprint
+                    .as_deref()
+                    .unwrap_or("legacy");
+                format!(
+                    "|workspace:{id}|revision:{}|authority:{authority}",
+                    snapshot.revision
+                )
+            })
         })
         .unwrap_or_default();
     if !branch_aware_enabled() {

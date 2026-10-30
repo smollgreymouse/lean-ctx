@@ -32,6 +32,10 @@ pub(crate) struct CheckoutIdentity {
     /// Stable local checkout-slot key. The root is intentionally not part of it:
     /// \`git worktree move\` keeps the admin slot while changing the root path.
     pub(crate) checkout_key: String,
+    /// Filesystem generation of the Git admin slot. Unlike `checkout_key`,
+    /// this changes when Git removes and later recreates a slot at the same
+    /// admin path, preventing authority resurrection after remove/re-add.
+    pub(crate) checkout_generation: Option<String>,
     pub(crate) kind: CheckoutKind,
     pub(crate) branch: Option<String>,
     pub(crate) head_oid: Option<String>,
@@ -258,6 +262,34 @@ fn opaque_key(parts: &[&Path]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+/// Best-effort filesystem generation for a checkout admin slot.
+///
+/// The admin path itself is intentionally stable across `git worktree move`,
+/// but Git may reuse that path after a remove/re-add. File identity distinguishes
+/// those generations without writing marker files into Git's private metadata.
+fn checkout_generation(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return Some(format!(
+            "windows:{}:{}",
+            metadata.volume_serial_number()?,
+            metadata.file_index()?
+        ));
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
 pub(crate) fn normalize_remote_url(url: &str) -> String {
     let url = url.trim().trim_end_matches(".git");
     let url = url
@@ -329,6 +361,7 @@ pub(crate) fn discover_checkout(path: &Path) -> Result<Option<CheckoutIdentity>,
     };
     let branch = optional_text_output(&root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
     let head_oid = optional_text_output(&root, &["rev-parse", "--verify", "HEAD"])?;
+    let checkout_generation = checkout_generation(&git_dir);
 
     Ok(Some(CheckoutIdentity {
         repository: RepositoryIdentity {
@@ -339,6 +372,7 @@ pub(crate) fn discover_checkout(path: &Path) -> Result<Option<CheckoutIdentity>,
         root,
         git_dir,
         checkout_key,
+        checkout_generation,
         kind,
         branch,
         head_oid,
@@ -348,6 +382,60 @@ pub(crate) fn discover_checkout(path: &Path) -> Result<Option<CheckoutIdentity>,
 pub(crate) fn same_repository(a: &CheckoutIdentity, b: &CheckoutIdentity) -> bool {
     a.repository.repository_key == b.repository.repository_key
         && a.repository.git_common_dir == b.repository.git_common_dir
+}
+
+/// Resolve a previously known checkout from its stable Git administration
+/// directory. Linked worktrees keep this admin slot across `git worktree move`,
+/// so this is the bridge from persisted checkout identity to the current root.
+///
+/// The returned checkout is still fully rediscovered and validated; the stored
+/// admin path is only a locator and never grants filesystem authority by itself.
+pub(crate) fn resolve_checkout_by_git_dir(
+    git_dir: &Path,
+) -> Result<Option<CheckoutIdentity>, GitCheckoutError> {
+    if !git_dir.exists() {
+        return Ok(None);
+    }
+    let git_dir = canonical_existing(git_dir, "stored git dir")?;
+
+    let candidate_root = if git_dir.join("gitdir").is_file() {
+        let backlink = std::fs::read(git_dir.join("gitdir")).map_err(|error| {
+            GitCheckoutError::InvalidMetadata(format!(
+                "cannot read worktree gitdir backlink {}: {error}",
+                git_dir.join("gitdir").display()
+            ))
+        })?;
+        let backlink = path_from_git_bytes(trim_git_path_bytes(&backlink))?;
+        let backlink = absolutize_path(&git_dir, backlink);
+        let Some(root) = backlink.parent() else {
+            return Err(GitCheckoutError::InvalidMetadata(
+                "worktree gitdir backlink has no parent".into(),
+            ));
+        };
+        root.to_path_buf()
+    } else {
+        let Some(root) = git_dir.parent() else {
+            return Err(GitCheckoutError::InvalidMetadata(
+                "main git dir has no repository parent".into(),
+            ));
+        };
+        root.to_path_buf()
+    };
+
+    if !candidate_root.exists() {
+        return Ok(None);
+    }
+    let Some(identity) = discover_checkout(&candidate_root)? else {
+        return Ok(None);
+    };
+    if identity.git_dir != git_dir {
+        return Err(GitCheckoutError::InvalidMetadata(format!(
+            "stored git dir {} resolved to a different checkout admin dir {}",
+            git_dir.display(),
+            identity.git_dir.display()
+        )));
+    }
+    Ok(Some(identity))
 }
 
 fn admin_dir_for_registered_root(common: &Path, root: &Path) -> Option<PathBuf> {
@@ -594,6 +682,7 @@ mod tests {
         git(&old, &["switch", "--detach"]);
         let detached = discover_checkout(&old).unwrap().unwrap();
         assert_eq!(before.checkout_key, detached.checkout_key);
+        assert_eq!(before.checkout_generation, detached.checkout_generation);
         assert!(detached.branch.is_none());
 
         let moved = fixture.tmp.path().join("wt-moved");
@@ -608,7 +697,14 @@ mod tests {
         );
         let after = discover_checkout(&moved).unwrap().unwrap();
         assert_eq!(before.checkout_key, after.checkout_key);
+        assert_eq!(before.checkout_generation, after.checkout_generation);
         assert_ne!(before.root, after.root);
+
+        let rebound = resolve_checkout_by_git_dir(&before.git_dir)
+            .unwrap()
+            .expect("stable worktree admin slot should resolve the moved checkout");
+        assert_eq!(rebound.checkout_key, before.checkout_key);
+        assert_eq!(rebound.root, moved.canonicalize().unwrap());
     }
 
     #[test]
@@ -692,6 +788,80 @@ mod tests {
             }),
             "locked sibling metadata must be preserved"
         );
+    }
+
+    #[test]
+    fn removed_worktree_admin_slot_no_longer_resolves_checkout() {
+        let fixture = RepoFixture::new();
+        let wt = fixture.worktree("wt-remove", "feature-a");
+        let identity = discover_checkout(&wt).unwrap().unwrap();
+
+        git(&fixture.main, &["worktree", "remove", wt.to_str().unwrap()]);
+
+        assert!(
+            resolve_checkout_by_git_dir(&identity.git_dir)
+                .unwrap()
+                .is_none(),
+            "removed worktree admin slot must not resurrect checkout authority"
+        );
+    }
+
+    #[test]
+    fn remove_and_readd_same_admin_path_gets_new_generation() {
+        let fixture = RepoFixture::new();
+        let wt = fixture.worktree("wt-generation", "feature-a");
+        let before = discover_checkout(&wt).unwrap().unwrap();
+
+        git(&fixture.main, &["worktree", "remove", wt.to_str().unwrap()]);
+        git(
+            &fixture.main,
+            &["worktree", "add", wt.to_str().unwrap(), "feature-a"],
+        );
+
+        let after = discover_checkout(&wt).unwrap().unwrap();
+        assert_eq!(
+            before.git_dir, after.git_dir,
+            "Git may reuse the same admin path after remove/re-add"
+        );
+        assert_eq!(before.checkout_key, after.checkout_key);
+        assert_ne!(
+            before.checkout_generation, after.checkout_generation,
+            "a new admin-slot generation must not inherit old checkout authority"
+        );
+    }
+
+    #[test]
+    fn missing_registered_worktree_is_reported_as_prunable_metadata_only() {
+        let fixture = RepoFixture::new();
+        let wt = fixture.worktree("wt-prunable", "feature-a");
+        fs::remove_dir_all(&wt).unwrap();
+
+        let main = discover_checkout(&fixture.main).unwrap().unwrap();
+        let listed = list_worktrees(&main).unwrap();
+        let stale = listed
+            .iter()
+            .find(|entry| entry.root == wt)
+            .expect("stale registered worktree should remain visible");
+        assert!(!stale.exists);
+        assert!(stale.prunable);
+        assert!(stale.git_dir.is_some());
+    }
+
+    #[test]
+    fn locked_missing_worktree_is_not_treated_as_live_authority() {
+        let fixture = RepoFixture::new();
+        let wt = fixture.worktree("wt-locked-missing", "feature-a");
+        git(&fixture.main, &["worktree", "lock", wt.to_str().unwrap()]);
+        fs::remove_dir_all(&wt).unwrap();
+
+        let main = discover_checkout(&fixture.main).unwrap().unwrap();
+        let listed = list_worktrees(&main).unwrap();
+        let stale = listed
+            .iter()
+            .find(|entry| entry.root == wt)
+            .expect("locked missing worktree should remain visible");
+        assert!(!stale.exists);
+        assert!(stale.locked);
     }
 
     #[test]
