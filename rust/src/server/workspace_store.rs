@@ -72,9 +72,13 @@ pub(crate) struct WorkspaceAdminView {
     pub additional: Vec<String>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub checkout_bindings: std::collections::BTreeMap<String, StoredCheckoutBinding>,
+    pub primary_status: WorkspaceRootStatus,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub additional_statuses: Vec<WorkspaceRootStatus>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum WorkspaceRootState {
     Active,
     Moved,
@@ -85,7 +89,7 @@ pub(crate) enum WorkspaceRootState {
     SiblingWorktree,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct WorkspaceRootStatus {
     pub configured: String,
     pub active: Option<std::path::PathBuf>,
@@ -826,6 +830,8 @@ pub(crate) fn admin_view(path: &Path) -> Result<WorkspaceAdminView, String> {
         primary: resolved.configured.primary,
         additional: resolved.configured.additional,
         checkout_bindings: resolved.checkout_bindings,
+        primary_status: resolved.primary,
+        additional_statuses: resolved.additional,
     })
 }
 
@@ -1018,10 +1024,20 @@ fn reject_same_repository_worktree(
             continue;
         }
 
-        let existing = crate::core::git_checkout::discover_checkout(Path::new(configured))
-            .map_err(|error| {
-                format!("cannot inspect configured Git checkout {configured}: {error}")
-            })?;
+        let existing = match crate::core::git_checkout::discover_checkout(Path::new(configured)) {
+            Ok(existing) => existing,
+            Err(crate::core::git_checkout::GitCheckoutError::ProbePathMissing(_)) => {
+                // A legacy configured root may have disappeared before checkout identity
+                // metadata existed. It is inactive authority, so it cannot prove a
+                // same-repository conflict and must not block unrelated additions.
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect configured Git checkout {configured}: {error}"
+                ));
+            }
+        };
         if let Some(existing) = existing
             && crate::core::git_checkout::same_repository(&existing, candidate)
             && existing.checkout_key != candidate.checkout_key
@@ -1745,6 +1761,56 @@ mod lifecycle_tests {
                 .checkout_bindings
                 .contains_key(additional.to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn missing_legacy_additional_git_worktree_does_not_block_independent_git_addition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary");
+        fs::create_dir(&primary).unwrap();
+        let store = tmp.path().join("workspace.json");
+        initialized_store(&store, primary.to_str().unwrap()).unwrap();
+
+        // Reproduce a pre-checkout-binding Workspace entry: an older writer
+        // persisted a linked Git worktree path in the legacy JSON without a
+        // sidecar identity record.
+        let stale_repo = RepoFixture::new();
+        let stale = stale_repo.linked("stale-linked");
+        let stale_text = stale.to_string_lossy().into_owned();
+        let mut legacy = load(&store).unwrap();
+        legacy.revision = 2;
+        legacy.additional = vec![stale_text.clone()];
+        fs::write(&store, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let _ = fs::remove_file(metadata_path(&store));
+        git(
+            &stale_repo.main,
+            &["worktree", "remove", stale.to_str().unwrap()],
+        );
+
+        let candidate = RepoFixture::new();
+        let candidate_text = candidate.main.to_string_lossy().into_owned();
+        let added = mutate(&store, 2, candidate.main.to_str().unwrap(), true)
+            .expect("missing legacy worktree must not block an unrelated Git root");
+        assert_eq!(added.revision, 3);
+        assert!(added.additional.contains(&candidate_text));
+        assert!(added.additional.contains(&stale_text));
+
+        let resolved = load_resolved(&store).unwrap();
+        assert!(resolved.additional.iter().any(|status| {
+            status.configured == stale_text
+                && status.state == WorkspaceRootState::Missing
+                && status.active.is_none()
+        }));
+        assert!(resolved.additional.iter().any(|status| {
+            status.configured == candidate_text
+                && status.state == WorkspaceRootState::Active
+                && status.active.as_deref() == Some(candidate.main.as_path())
+        }));
+
+        let view = admin_view(&store).unwrap();
+        assert!(view.additional_statuses.iter().any(|status| {
+            status.configured == stale_text && status.state == WorkspaceRootState::Missing
+        }));
     }
 
     #[test]

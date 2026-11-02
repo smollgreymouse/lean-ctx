@@ -57,6 +57,7 @@ pub(crate) enum GitCheckoutError {
     GitUnavailable(String),
     CommandFailed(String),
     InvalidMetadata(String),
+    ProbePathMissing(PathBuf),
     UnsafeResolvedPath(PathBuf),
 }
 
@@ -66,6 +67,11 @@ impl fmt::Display for GitCheckoutError {
             Self::GitUnavailable(message) => write!(f, "git unavailable: {message}"),
             Self::CommandFailed(message) => write!(f, "git command failed: {message}"),
             Self::InvalidMetadata(message) => write!(f, "invalid git metadata: {message}"),
+            Self::ProbePathMissing(path) => write!(
+                f,
+                "invalid git metadata: checkout probe path does not exist: {}",
+                path.display()
+            ),
             Self::UnsafeResolvedPath(path) => {
                 write!(f, "git resolved an unsafe project path: {}", path.display())
             }
@@ -145,15 +151,27 @@ fn command_output(cwd: &Path, args: &[&str]) -> Result<std::process::Output, Git
 }
 
 fn command_cwd(path: &Path) -> Result<PathBuf, GitCheckoutError> {
-    let path = if path.is_dir() {
+    let metadata = match path.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(GitCheckoutError::ProbePathMissing(path.to_path_buf()));
+        }
+        Err(error) => {
+            return Err(GitCheckoutError::InvalidMetadata(format!(
+                "cannot inspect checkout probe path {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let path = if metadata.is_dir() {
         path
-    } else if path.is_file() {
+    } else if metadata.is_file() {
         path.parent().ok_or_else(|| {
             GitCheckoutError::InvalidMetadata(format!("path has no parent: {}", path.display()))
         })?
     } else {
         return Err(GitCheckoutError::InvalidMetadata(format!(
-            "checkout probe path does not exist: {}",
+            "checkout probe path is neither a file nor directory: {}",
             path.display()
         )));
     };
