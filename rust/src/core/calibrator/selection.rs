@@ -336,7 +336,10 @@ fn read_bundle_files_with_limits(
         let mut entry = archive
             .by_index(index)
             .map_err(|error| format!("read selection evidence entry {index}: {error}"))?;
-        let path = entry.name().to_owned();
+        let path = entry
+            .name()
+            .map_err(|error| format!("invalid selection evidence entry name {index}: {error}"))?
+            .into_owned();
         if !is_safe_archive_path(&path) || entry.is_dir() {
             return Err(format!(
                 "selection evidence bundle has unsafe entry '{path}'"

@@ -1411,7 +1411,10 @@ fn extract_from_zip(data: &[u8]) -> Result<Vec<u8>, String> {
 
     for i in 0..zip.len() {
         let mut file = zip.by_index(i).map_err(|e| e.to_string())?;
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .map_err(|error| format!("invalid ZIP entry name: {error}"))?
+            .into_owned();
         if name == "lean-ctx.exe" || name == "lean-ctx" {
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
