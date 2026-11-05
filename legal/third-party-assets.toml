@@ -216,16 +216,17 @@ evidence_paths = [
 [[assets]]
 id = "vendored-rmcp"
 path = "rust/crates/vendor/rmcp"
-sha256 = "c516ce111faf9d175add0877b5535208e4e7f4df4f48f9012727da7e865f85fa"
+sha256 = "d20747813f065b99bda9f5960f7c9d1572df119390713da86eda68ad433d5572"
 version = "2.0.0"
 source = "https://github.com/modelcontextprotocol/rust-sdk/tree/rmcp-v2.0.0"
 spdx = "Apache-2.0"
 license_text_path = "LICENSES/Apache-2.0.txt"
 modified = true
-modification_summary = "LeanCTX carries the local JoinSet response-send drain patch described in rust/Cargo.toml, and an OAuth discovery patch in src/transport/auth.rs (#1391: a 200 status page on the MCP endpoint is not taken as RFC 9728 resource metadata); upstream rmcp 2.0.0 is retained as the provenance base."
+modification_summary = "LeanCTX carries the local JoinSet response-send drain patch described in rust/Cargo.toml, an OAuth discovery patch in src/transport/auth.rs (#1391: a 200 status page on the MCP endpoint is not taken as RFC 9728 resource metadata), and progress forwarding/order fixes in src/service.rs; upstream rmcp 2.0.0 is retained as the provenance base."
 evidence_paths = [
   "rust/crates/vendor/rmcp/Cargo.toml",
   "rust/crates/vendor/rmcp/src/transport/auth.rs",
+  "rust/crates/vendor/rmcp/src/service.rs",
   "rust/Cargo.toml",
 ]
 
