@@ -78,10 +78,26 @@ fn verify_long_lived_mcp_sessions() -> Result<(), String> {
     }
     let store_a = tmp.path().join("A.json");
     let store_b = tmp.path().join("B.json");
-    crate::server::workspace_store::initialized_store(&store_a, primary.to_str().unwrap())?;
-    crate::server::workspace_store::initialized_store(&store_b, primary.to_str().unwrap())?;
-    crate::server::workspace_store::mutate(&store_a, 1, extra_a.to_str().unwrap(), true)?;
-    crate::server::workspace_store::mutate(&store_b, 1, extra_b.to_str().unwrap(), true)?;
+    crate::server::workspace_store::initialized_store(
+        &store_a,
+        primary.to_str().ok_or("test checkout path is not UTF-8")?,
+    )?;
+    crate::server::workspace_store::initialized_store(
+        &store_b,
+        primary.to_str().ok_or("test checkout path is not UTF-8")?,
+    )?;
+    crate::server::workspace_store::mutate(
+        &store_a,
+        1,
+        extra_a.to_str().ok_or("test checkout path is not UTF-8")?,
+        true,
+    )?;
+    crate::server::workspace_store::mutate(
+        &store_b,
+        1,
+        extra_b.to_str().ok_or("test checkout path is not UTF-8")?,
+        true,
+    )?;
     // Long-lived transport isolation is tested independently of shared SessionMode;
     // shared SessionState collision has its own dedicated self-test below.
     let mut server_a = LeanCtxServer::new_with_project_root(primary.to_str());
@@ -154,6 +170,8 @@ pub(crate) fn run(args: &[String]) -> i32 {
         // Security self-tests must never run startup maintenance against the
         // developer's real HOME (IDE hooks/rules, skills, etc.). This command is
         // a short-lived standalone process, so changing its environment is safe.
+        // SAFETY: workspace-admin self-tests are a standalone CLI path; this
+        // startup override precedes all self-test worker/runtime creation.
         unsafe { std::env::set_var("LEAN_CTX_HEADLESS", "1") };
     }
     #[cfg(debug_assertions)]
@@ -290,10 +308,10 @@ pub(crate) fn run(args: &[String]) -> i32 {
         "show" if args.len() == 2 => crate::server::workspace_store::admin_view(path),
         "create" if args.len() == 3 => {
             crate::server::workspace_store::initialized_store(path, &args[2])
-                .and_then(|_| crate::server::workspace_store::admin_view(path))
+                .and_then(|()| crate::server::workspace_store::admin_view(path))
         }
         "reconcile" if args.len() == 2 => crate::server::workspace_store::reconcile_metadata(path)
-            .and_then(|_| crate::server::workspace_store::admin_view(path)),
+            .and_then(|()| crate::server::workspace_store::admin_view(path)),
         "add" | "remove" if args.len() == 4 => {
             let revision = match args[3].parse::<u64>() {
                 Ok(revision) if revision > 0 => revision,
@@ -344,9 +362,20 @@ fn verify_dual_mcp_handler_isolation() -> Result<(), String> {
     }
     let store_a = tmp.path().join("workspace-A.json");
     let store_c = tmp.path().join("workspace-C.json");
-    crate::server::workspace_store::initialized_store(&store_a, ra.to_str().unwrap())?;
-    crate::server::workspace_store::initialized_store(&store_c, rc.to_str().unwrap())?;
-    crate::server::workspace_store::mutate(&store_a, 1, rb.to_str().unwrap(), true)?;
+    crate::server::workspace_store::initialized_store(
+        &store_a,
+        ra.to_str().ok_or("test checkout path is not UTF-8")?,
+    )?;
+    crate::server::workspace_store::initialized_store(
+        &store_c,
+        rc.to_str().ok_or("test checkout path is not UTF-8")?,
+    )?;
+    crate::server::workspace_store::mutate(
+        &store_a,
+        1,
+        rb.to_str().ok_or("test checkout path is not UTF-8")?,
+        true,
+    )?;
     let mut server_a = LeanCtxServer::new_with_project_root(ra.to_str());
     let mut server_c = LeanCtxServer::new_with_project_root(rc.to_str());
     server_a.workspace_store_path = Some(store_a);
@@ -409,16 +438,27 @@ fn verify_shared_session_workspace_isolation() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let store_a = tmp.path().join("A.json");
     let store_b = tmp.path().join("B.json");
-    crate::server::workspace_store::initialized_store(&store_a, primary.to_str().unwrap())?;
-    crate::server::workspace_store::initialized_store(&store_b, primary.to_str().unwrap())?;
-    crate::server::workspace_store::mutate(&store_a, 1, extra.to_str().unwrap(), true)?;
+    crate::server::workspace_store::initialized_store(
+        &store_a,
+        primary.to_str().ok_or("test checkout path is not UTF-8")?,
+    )?;
+    crate::server::workspace_store::initialized_store(
+        &store_b,
+        primary.to_str().ok_or("test checkout path is not UTF-8")?,
+    )?;
+    crate::server::workspace_store::mutate(
+        &store_a,
+        1,
+        extra.to_str().ok_or("test checkout path is not UTF-8")?,
+        true,
+    )?;
     let mut sa = LeanCtxServer::new_shared_with_context(
-        primary.to_str().unwrap(),
+        primary.to_str().ok_or("test checkout path is not UTF-8")?,
         "shared-security",
         "same-channel",
     );
     let mut sb = LeanCtxServer::new_shared_with_context(
-        primary.to_str().unwrap(),
+        primary.to_str().ok_or("test checkout path is not UTF-8")?,
         "shared-security",
         "same-channel",
     );
@@ -474,8 +514,16 @@ fn verify_bm25_revocation_during_build() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     let store = tmp.path().join("workspace.json");
-    crate::server::workspace_store::initialized_store(&store, primary.to_str().unwrap())?;
-    crate::server::workspace_store::mutate(&store, 1, extra.to_str().unwrap(), true)?;
+    crate::server::workspace_store::initialized_store(
+        &store,
+        primary.to_str().ok_or("test checkout path is not UTF-8")?,
+    )?;
+    crate::server::workspace_store::mutate(
+        &store,
+        1,
+        extra.to_str().ok_or("test checkout path is not UTF-8")?,
+        true,
+    )?;
     let mut server = LeanCtxServer::new_with_project_root(primary.to_str());
     server.workspace_store_path = Some(store.clone());
     let engine = Arc::new(ContextEngine::from_server(server));
@@ -485,7 +533,7 @@ fn verify_bm25_revocation_during_build() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let result = rt.block_on(async move {
+    rt.block_on(async move {
         let runner = engine.clone();
         let path = extra.clone();
         let search = tokio::spawn(async move {
@@ -507,8 +555,12 @@ fn verify_bm25_revocation_during_build() -> Result<(), String> {
             crate::server::workspace_test_hooks::clear();
             return Err("BM25 barrier not reached".into());
         }
-        let changed =
-            crate::server::workspace_store::mutate(&store, 2, extra.to_str().unwrap(), false)?;
+        let changed = crate::server::workspace_store::mutate(
+            &store,
+            2,
+            extra.to_str().ok_or("test checkout path is not UTF-8")?,
+            false,
+        )?;
         if changed.revision != 3 {
             return Err("unexpected revocation revision".into());
         }
@@ -521,8 +573,7 @@ fn verify_bm25_revocation_during_build() -> Result<(), String> {
             ));
         }
         Ok(())
-    });
-    result
+    })
 }
 
 #[cfg(debug_assertions)]
@@ -548,56 +599,57 @@ fn verify_progress_routing_is_request_local() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let outcome =
-        rt.block_on(async move {
-            let aa = a.clone();
-            let bb = b.clone();
-            let root_a = root.clone();
-            let root_b = root.clone();
-            let fa = tokio::spawn(async move {
+    rt.block_on(async move {
+        let aa = a.clone();
+        let bb = b.clone();
+        let root_a = root.clone();
+        let root_b = root.clone();
+        let fa =
+            tokio::spawn(async move {
                 aa.call_tool_trace("ctx_semantic_search", Some(serde_json::json!({
                 "query":"progress_alpha_marker", "path":root_a.to_string_lossy(), "mode":"bm25"
             })), "progress-A").await
             });
-            let fb = tokio::spawn(async move {
+        let fb =
+            tokio::spawn(async move {
                 bb.call_tool_trace("ctx_semantic_search", Some(serde_json::json!({
                 "query":"progress_beta_marker", "path":root_b.to_string_lossy(), "mode":"bm25"
             })), "progress-B").await
             });
-            let reached = tokio::task::spawn_blocking(|| {
-                crate::server::workspace_test_hooks::wait_hits(2, Duration::from_secs(20))
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-            if !reached {
-                crate::server::workspace_test_hooks::clear();
-                return Err("two overlapping progress requests did not reach barrier".into());
-            }
-            crate::server::workspace_test_hooks::release();
-            let (_, notes_a) = fa
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-            let (_, notes_b) = fb
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
+        let reached = tokio::task::spawn_blocking(|| {
+            crate::server::workspace_test_hooks::wait_hits(2, Duration::from_secs(20))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if !reached {
             crate::server::workspace_test_hooks::clear();
-            let joined_a = notes_a.join("\n");
-            let joined_b = notes_b.join("\n");
-            if !joined_a.contains("progress-A") || joined_a.contains("progress-B") {
-                return Err(format!(
-                    "peer A progress routing crossed requests: {joined_a}"
-                ));
-            }
-            if !joined_b.contains("progress-B") || joined_b.contains("progress-A") {
-                return Err(format!(
-                    "peer B progress routing crossed requests: {joined_b}"
-                ));
-            }
-            // Scope cleanup: after both overlapping requests complete, a third
-            // call must route only to its own peer/token, never a stale sender.
-            let (_, notes_c) = a
+            return Err("two overlapping progress requests did not reach barrier".into());
+        }
+        crate::server::workspace_test_hooks::release();
+        let (_, notes_a) = fa
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let (_, notes_b) = fb
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        crate::server::workspace_test_hooks::clear();
+        let joined_a = notes_a.join("\n");
+        let joined_b = notes_b.join("\n");
+        if !joined_a.contains("progress-A") || joined_a.contains("progress-B") {
+            return Err(format!(
+                "peer A progress routing crossed requests: {joined_a}"
+            ));
+        }
+        if !joined_b.contains("progress-B") || joined_b.contains("progress-A") {
+            return Err(format!(
+                "peer B progress routing crossed requests: {joined_b}"
+            ));
+        }
+        // Scope cleanup: after both overlapping requests complete, a third
+        // call must route only to its own peer/token, never a stale sender.
+        let (_, notes_c) = a
             .call_tool_trace(
                 "ctx_semantic_search",
                 Some(serde_json::json!({
@@ -607,18 +659,17 @@ fn verify_progress_routing_is_request_local() -> Result<(), String> {
             )
             .await
             .map_err(|e| e.to_string())?;
-            let joined_c = notes_c.join("\n");
-            if !joined_c.contains("progress-C")
-                || joined_c.contains("progress-A")
-                || joined_c.contains("progress-B")
-            {
-                return Err(format!(
-                    "request-local progress sender survived scope cleanup: {joined_c}"
-                ));
-            }
-            Ok(())
-        });
-    outcome
+        let joined_c = notes_c.join("\n");
+        if !joined_c.contains("progress-C")
+            || joined_c.contains("progress-A")
+            || joined_c.contains("progress-B")
+        {
+            return Err(format!(
+                "request-local progress sender survived scope cleanup: {joined_c}"
+            ));
+        }
+        Ok(())
+    })
 }
 
 #[cfg(debug_assertions)]
@@ -635,6 +686,8 @@ fn verify_dense_namespace_is_workspace_scoped() -> Result<(), String> {
     };
     let data = root.path().join("data");
     std::fs::create_dir(&data).map_err(|e| e.to_string())?;
+    // SAFETY: this standalone self-test sets its private fixture directory
+    // before creating the runtime or any worker threads.
     unsafe { std::env::set_var("LEAN_CTX_DATA_DIR", &data) };
     let scoped = |snapshot: WorkspaceSnapshot| {
         REQUEST_WORKSPACE.sync_scope(Some(snapshot), || {
@@ -648,7 +701,10 @@ fn verify_dense_namespace_is_workspace_scoped() -> Result<(), String> {
     let (a2, dir_a2) = scoped(mk("11111111-1111-4111-8111-111111111111", 2));
     if a == b || a == a2 || b == a2 || dir_a == dir_b || dir_a == dir_a2 || dir_b == dir_a2 {
         return Err(format!(
-            "dense namespace collision: A={a}:{dir_a:?}, B={b}:{dir_b:?}, A2={a2}:{dir_a2:?}"
+            "dense namespace collision: A={a}:{}, B={b}:{}, A2={a2}:{}",
+            dir_a.display(),
+            dir_b.display(),
+            dir_a2.display()
         ));
     }
     std::fs::create_dir_all(&dir_a).map_err(|e| e.to_string())?;

@@ -122,6 +122,7 @@ impl ResolvedWorkspace {
     }
 }
 
+#[cfg(any(debug_assertions, test, not(unix)))]
 fn metadata_path(path: &Path) -> std::path::PathBuf {
     let mut name = path
         .file_name()
@@ -158,6 +159,7 @@ fn verify_private_file(file: &std::fs::File) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // SAFETY: geteuid reads the effective process UID and takes no pointers.
         if meta.uid() != unsafe { libc::geteuid() } || meta.permissions().mode() & 0o077 != 0 {
             return Err("Workspace state must be owned by the process user and mode 0600".into());
         }
@@ -216,6 +218,8 @@ impl StoreAnchor {
         mode: libc::mode_t,
     ) -> Result<std::fs::File, String> {
         let c = Self::c_name(name)?;
+        // SAFETY: self.dir owns a live directory fd and c is a live NUL-terminated
+        // CString for the duration of openat; flags/mode are valid libc values.
         let fd = unsafe {
             libc::openat(
                 self.dir.as_raw_fd(),
@@ -227,6 +231,8 @@ impl StoreAnchor {
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
+        // SAFETY: the successful openat yielded a fresh owned fd; this call
+        // transfers ownership exactly once to File.
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
         Ok(file)
     }
@@ -243,6 +249,8 @@ impl StoreAnchor {
         flags: i32,
     ) -> Result<Option<std::fs::File>, String> {
         let c = Self::c_name(name)?;
+        // SAFETY: self.dir owns a live directory fd and c is a live NUL-terminated
+        // CString for the duration of openat; flags/mode are valid libc values.
         let fd = unsafe {
             libc::openat(
                 self.dir.as_raw_fd(),
@@ -258,6 +266,8 @@ impl StoreAnchor {
             }
             return Err(error.to_string());
         }
+        // SAFETY: the successful openat yielded a fresh owned fd; this call
+        // transfers ownership exactly once to File.
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
         verify_private_file(&file)?;
         Ok(Some(file))
@@ -310,6 +320,8 @@ impl StoreAnchor {
     fn rename_within(&self, from: &std::ffi::OsStr, to: &std::ffi::OsStr) -> Result<(), String> {
         let from = Self::c_name(from)?;
         let to = Self::c_name(to)?;
+        // SAFETY: both directory fds are held by self.dir and the two names
+        // are NUL-terminated CStrings alive throughout renameat.
         let rc = unsafe {
             libc::renameat(
                 self.dir.as_raw_fd(),
@@ -326,6 +338,8 @@ impl StoreAnchor {
 
     fn unlink(&self, name: &std::ffi::OsStr) {
         if let Ok(name) = Self::c_name(name) {
+            // SAFETY: self.dir owns the live directory fd and name is a
+            // NUL-terminated CString alive for the duration of unlinkat.
             unsafe {
                 libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), 0);
             }
@@ -1246,14 +1260,11 @@ pub(crate) fn mutate(
 ) -> Result<StoredWorkspace, String> {
     let root = if add {
         validate_root(root)?
+    } else if let Ok(root) = validate_root(root) {
+        root
     } else {
-        match validate_root(root) {
-            Ok(root) => root,
-            Err(_) => {
-                validate_configured_root(root)?;
-                root.to_string()
-            }
-        }
+        validate_configured_root(root)?;
+        root.to_string()
     };
     #[cfg(unix)]
     {

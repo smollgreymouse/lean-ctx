@@ -234,7 +234,7 @@ impl ServerHandler for LeanCtxServer {
                 // authority: the daemon may have been launched from HOME or a
                 // sibling checkout. Start at the trusted primary; explicit cwd
                 // requests still pass through the request-scoped Workspace jail.
-                session.shell_cwd = effective_root.clone();
+                session.shell_cwd.clone_from(&effective_root);
             } else if !cwd_str.is_empty() {
                 session.shell_cwd = Some(cwd_str.clone());
             }

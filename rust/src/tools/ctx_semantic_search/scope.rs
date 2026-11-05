@@ -41,9 +41,8 @@ pub(crate) fn resolve_search_root(path: &str) -> Result<(PathBuf, Option<String>
         // An MCP call may explicitly authorize independent workspace roots.
         // Search authority is narrower than PathJail: allow_paths alone never
         // grants indexing/search authority. Reject all non-member paths.
-        if let Some(extra) = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
+        if let Ok(extra) = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS
             .try_with(|slot| slot.borrow().clone())
-            .ok()
         {
             for candidate in extra {
                 // Canonicalize both sides so symlinks cannot escape an admitted root.

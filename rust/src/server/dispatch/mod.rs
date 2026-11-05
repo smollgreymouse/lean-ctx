@@ -548,7 +548,7 @@ impl LeanCtxServer {
                 (!ctx.project_root.is_empty()).then(|| std::path::PathBuf::from(&ctx.project_root))
             });
         let policy_workspace = crate::core::policy::runtime::REQUEST_WORKSPACE
-            .try_with(|value| value.clone())
+            .try_with(Clone::clone)
             .ok()
             .flatten();
         let policy_search_roots = crate::core::policy::runtime::REQUEST_SEARCH_ROOTS

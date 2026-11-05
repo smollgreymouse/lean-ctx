@@ -549,7 +549,7 @@ pub fn jail_path_with_roots(
         let cfg = crate::core::config::Config::load();
         if cfg.path_jail == Some(false)
             && !crate::core::policy::runtime::REQUEST_WORKSPACE
-                .try_with(|snapshot| snapshot.is_some())
+                .try_with(Option::is_some)
                 .unwrap_or(false)
         {
             return Ok(canonicalize_or_self(candidate));
@@ -570,7 +570,7 @@ pub fn jail_path_with_roots(
         };
 
         let strict_workspace = crate::core::policy::runtime::REQUEST_WORKSPACE
-            .try_with(|snapshot| snapshot.clone())
+            .try_with(Clone::clone)
             .ok()
             .flatten();
         let mut allow = if let Some(ref workspace) = strict_workspace {

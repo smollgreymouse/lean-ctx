@@ -8290,7 +8290,7 @@
       "version": "2.3.0"
     },
     {
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#quinn-proto@0.11.16",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#quinn-proto@0.11.18",
       "description": "State machine for the QUIC transport protocol",
       "externalReferences": [
         {
@@ -8301,7 +8301,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
+          "content": "a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc"
         }
       ],
       "licenses": [
@@ -8310,10 +8310,10 @@
         }
       ],
       "name": "quinn-proto",
-      "purl": "pkg:cargo/quinn-proto@0.11.16",
+      "purl": "pkg:cargo/quinn-proto@0.11.18",
       "scope": "required",
       "type": "library",
-      "version": "0.11.16"
+      "version": "0.11.18"
     },
     {
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#quinn-udp@0.5.15",
@@ -18348,7 +18348,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
         "registry+https://github.com/rust-lang/crates.io-index#web-time@1.1.0"
       ],
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#quinn-proto@0.11.16"
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#quinn-proto@0.11.18"
     },
     {
       "dependsOn": [
@@ -18366,7 +18366,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#bytes@1.12.1",
         "registry+https://github.com/rust-lang/crates.io-index#cfg_aliases@0.2.2",
         "registry+https://github.com/rust-lang/crates.io-index#pin-project-lite@0.2.17",
-        "registry+https://github.com/rust-lang/crates.io-index#quinn-proto@0.11.16",
+        "registry+https://github.com/rust-lang/crates.io-index#quinn-proto@0.11.18",
         "registry+https://github.com/rust-lang/crates.io-index#quinn-udp@0.5.15",
         "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3",
         "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.46",
@@ -19017,7 +19017,7 @@
     {
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0",
-        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.3.4",
         "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
         "registry+https://github.com/rust-lang/crates.io-index#rustix@1.1.4",
         "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2"
@@ -20254,7 +20254,7 @@
       },
       {
         "name": "leanctx:cargo-lock-sha256",
-        "value": "c83ac895b3b51e5b5b07d6688acbd1aea0604d001622e823f5878f167b9c0a4e"
+        "value": "c9d6238beeb2450cbbdcdaaf951eb386332bbb77cccbd4278d601b26d5e6f346"
       }
     ],
     "tools": [

@@ -290,7 +290,7 @@ fn checkout_generation(path: &Path) -> Option<String> {
     {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(path).ok()?;
-        return Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()));
+        Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
     }
     #[cfg(windows)]
     {

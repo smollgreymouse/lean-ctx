@@ -33,7 +33,7 @@ fn namespace_seed(project_root: &Path) -> String {
         .unwrap_or_else(|| crate::core::graph_index::normalize_project_root(&root_s));
 
     let authority_suffix = crate::core::policy::runtime::REQUEST_WORKSPACE
-        .try_with(|snapshot| snapshot.clone())
+        .try_with(Clone::clone)
         .ok()
         .flatten()
         .and_then(|snapshot| {

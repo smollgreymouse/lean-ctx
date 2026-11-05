@@ -210,7 +210,7 @@ impl LeanCtxServer {
 
         // Record the current peer's declared MCP roots separately from global
         // legacy extra_roots. They are still client claims, NOT authentication.
-        session.client_workspace_roots = validated_paths.clone();
+        session.client_workspace_roots.clone_from(&validated_paths);
         let other_roots: Vec<String> = validated_paths
             .iter()
             .filter(|p| p.as_str() != new_root)
