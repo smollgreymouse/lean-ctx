@@ -2,15 +2,15 @@
 Schema: leanctx.third-party-notices/v1
 Status: GENERATED - PENDING APPROVAL
 Content-Digest-Scope: SHA-256 of this file with the Content-Digest value zeroed
-Content-Digest: sha256:fcf298a5ce8293d224dd537cb500f2922572572df9a97590207b109e7f63a682
+Content-Digest: sha256:043681a0f7fc511c8c35bd9a59603aabde6ed3b8ec17c41a59990e0bf0353811
 Source inventory: rust/Cargo.lock + cargo metadata --locked --offline --all-features + SBOM.cdx.json + legal/third-party-assets.toml + packages/pi-lean-ctx/package-lock.json
 Generation command: cargo metadata --locked --offline --all-features --manifest-path rust/Cargo.toml --format-version 1
 Approval contract: legal/third-party-notices-approval.toml binds approved_content_sha256 to this file's exact SHA-256
-Cargo.lock SHA-256: a9d8b3bb6d65830fb64bad579692ec7819b0c4b0948923e22f6c2b701aa6fa6f
-Cargo metadata inventory SHA-256: f4e96da2e979f7f027607f71c6b42f86a24d0e070cfbccb30ce9753cdc1e6caa
-SBOM.cdx.json SHA-256: 0340707e27976af0cb67d49928f13129e4b21dcbea6ebdb11c23f795d90cb1df
+Cargo.lock SHA-256: 14cf1e969cef5a32b2e696299569837c27ad74e2b1003cd83be40560d714166f
+Cargo metadata inventory SHA-256: 8b0bd4ba60e4f7290a3bab9f031da0e529919a18f7b5cc6b6a9d1d08b0a23478
+SBOM.cdx.json SHA-256: e310b3bb11fde11b96c5497e77883bc38d7fbb106985aa90711a6b061583d549
 SBOM components: 540
-Asset manifest SHA-256: 29a144f35ae7d08a90322e7217598cd74d1c73ac9a860bf188cc8962dfe20d9d
+Asset manifest SHA-256: e96993bb1a4baa12533a571950bee655e09f0b73936ca6c11d4af6bf3d865c81
 npm package-lock.json SHA-256: 3ca97565d7f519821a03e2360293ab11312a72d3efd1c7b5d81674e4dffba361
 Bundled MCP SDK: @modelcontextprotocol/sdk 1.32.1 (sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==)
 Cargo graph packages: 594
@@ -4665,28 +4665,28 @@ Targets: zopfli[bin], zopfli[lib]
 Features: default, gzip, nightly, std, zlib
 Dependencies: bumpalo, crc32fast, log, simd-adler32
 
-### zstd 0.13.3
+### zstd 0.13.4
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/gyscos/zstd-rs
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: BSD-3-Clause
 Targets: basic[example], benchmark[example], issue_182[test], stream[example], train[example], zstd[example], zstd[lib], zstdcat[example]
 Features: arrays, bindgen, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, thin, thin-lto, wasm, zdict_builder, zstdmt
 Dependencies: zstd-safe
 
-### zstd-safe 7.2.4
+### zstd-safe 7.4.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/gyscos/zstd-rs
-SPDX-License-Identifier: MIT OR Apache-2.0
+SPDX-License-Identifier: BSD-3-Clause
 Targets: build-script-build[custom-build], zstd_safe[lib]
 Features: arrays, bindgen, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, seekable, std, thin, thin-lto, zdict_builder, zstdmt
 Dependencies: zstd-sys
 
-### zstd-sys 2.0.16+zstd.1.5.7
+### zstd-sys 2.1.2+zstd.1.5.7
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/gyscos/zstd-rs
-SPDX-License-Identifier: MIT/Apache-2.0
+SPDX-License-Identifier: BSD-3-Clause
 Targets: build-script-build[custom-build], zstd_sys[lib]
-Features: bindgen, debug, default, experimental, fat-lto, legacy, no_asm, no_wasm_shim, non-cargo, pkg-config, seekable, std, thin, thin-lto, zdict_builder, zstdmt
+Features: bindgen, cmake, debug, default, experimental, fat-lto, legacy, no_asm, no_wasm_shim, non-cargo, pkg-config, seekable, std, thin, thin-lto, vendored, zdict_builder, zstdmt
 Dependencies: cc, pkg-config
 
 ## Non-Cargo and vendored assets
