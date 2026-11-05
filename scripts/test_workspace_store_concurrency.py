@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Hermetic two-MCP-process integration for shared trusted Workspace CAS/live reads.
 
 This is a cross-process test; it does NOT prove multiple MCP clients in one process.

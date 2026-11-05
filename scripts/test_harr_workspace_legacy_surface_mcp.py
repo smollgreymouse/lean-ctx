@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Real stdio MCP regression for Harr's backward-compatible Workspace tool surface."""
 import json, os, select, subprocess, tempfile, time
 from pathlib import Path

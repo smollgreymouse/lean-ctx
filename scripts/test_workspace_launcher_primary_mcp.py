@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 import json, os, select, subprocess, tempfile, time, uuid
 from pathlib import Path
 
