@@ -2,19 +2,19 @@
 Schema: leanctx.third-party-notices/v1
 Status: GENERATED - PENDING APPROVAL
 Content-Digest-Scope: SHA-256 of this file with the Content-Digest value zeroed
-Content-Digest: sha256:043681a0f7fc511c8c35bd9a59603aabde6ed3b8ec17c41a59990e0bf0353811
+Content-Digest: sha256:0ec321f3db3a023c78eb9d79f4043f3e75f1bd4731284d3d82d52e33b3260ccd
 Source inventory: rust/Cargo.lock + cargo metadata --locked --offline --all-features + SBOM.cdx.json + legal/third-party-assets.toml + packages/pi-lean-ctx/package-lock.json
 Generation command: cargo metadata --locked --offline --all-features --manifest-path rust/Cargo.toml --format-version 1
 Approval contract: legal/third-party-notices-approval.toml binds approved_content_sha256 to this file's exact SHA-256
-Cargo.lock SHA-256: 14cf1e969cef5a32b2e696299569837c27ad74e2b1003cd83be40560d714166f
-Cargo metadata inventory SHA-256: 8b0bd4ba60e4f7290a3bab9f031da0e529919a18f7b5cc6b6a9d1d08b0a23478
-SBOM.cdx.json SHA-256: e310b3bb11fde11b96c5497e77883bc38d7fbb106985aa90711a6b061583d549
-SBOM components: 540
-Asset manifest SHA-256: e96993bb1a4baa12533a571950bee655e09f0b73936ca6c11d4af6bf3d865c81
+Cargo.lock SHA-256: c83ac895b3b51e5b5b07d6688acbd1aea0604d001622e823f5878f167b9c0a4e
+Cargo metadata inventory SHA-256: f2c241e669f940b334bb84d24d0f61631cafba08cd1cd7b4f72879cc5c264a6d
+SBOM.cdx.json SHA-256: 114cc421d4f6136ef15facaa6352d9640a890fc00ae5ebedf0a2cefe9c152266
+SBOM components: 543
+Asset manifest SHA-256: 24acc742da47dbdc00004a6d9867863f86fce820139a0be15392d5a8434a8b6f
 npm package-lock.json SHA-256: 3ca97565d7f519821a03e2360293ab11312a72d3efd1c7b5d81674e4dffba361
 Bundled MCP SDK: @modelcontextprotocol/sdk 1.32.1 (sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==)
-Cargo graph packages: 594
-Third-party Cargo packages: 584
+Cargo graph packages: 597
+Third-party Cargo packages: 587
 
 ## Cargo dependency graph
 ### adler2 2.0.1
@@ -55,7 +55,7 @@ Package source: https://github.com/RustCrypto/block-ciphers
 SPDX-License-Identifier: MIT OR Apache-2.0
 Targets: aes[lib], hazmat[test], mod[bench], mod[test]
 Features: hazmat, zeroize
-Dependencies: cipher, cpubits, cpufeatures
+Dependencies: cipher, cpubits, cpufeatures, zeroize
 
 ### ahash 0.8.12
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -617,6 +617,14 @@ Targets: bench[bench], bench_classic[bench], bench_generic[bench], constant_time
 Features: count_instructions_test, default, std
 Dependencies: (none)
 
+### constant_time_eq 0.6.1
+Source: registry+https://github.com/rust-lang/crates.io-index
+Package source: https://codeberg.org/cesarb/constant_time_eq
+SPDX-License-Identifier: CC0-1.0 OR MIT-0 OR Apache-2.0
+Targets: bench[bench], bench_generic[bench], build-script-build[custom-build], constant_time_eq[lib], count_instructions[test], count_instructions_generic[test], exhaustive[test]
+Features: default, std
+Dependencies: rustversion
+
 ### cookie 0.18.2
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/SergioBenitez/cookie-rs
@@ -769,7 +777,7 @@ Targets: crypto_common[lib]
 Features: getrandom, rand_core, zeroize
 Dependencies: hybrid-array
 
-### ctutils 0.4.2
+### ctutils 0.4.4
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/RustCrypto/utils
 SPDX-License-Identifier: Apache-2.0 OR MIT
@@ -1889,11 +1897,11 @@ Targets: lsif[test], lsp_types[lib]
 Features: default, proposed
 Dependencies: bitflags, fluent-uri, serde, serde_json, serde_repr
 
-### lzma-rust2 0.16.5
+### lzma-rust2 0.24.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/hasenbanck/lzma-rust2/
 SPDX-License-Identifier: Apache-2.0
-Targets: comparison[bench], efficiency[test], lzip[test], lzip_mt[test], lzip_reader[example], lzip_reference[test], lzip_writer[example], lzma2[test], lzma2_mt[test], lzma2_reader[example], lzma2_writer[example], lzma[test], lzma_reader[example], lzma_rust2[lib], lzma_writer[example], multi_writer[test], regression[test], unwind_safe[test], xz[test], xz_mt[test], xz_reader[example], xz_reference[test], xz_writer[example]
+Targets: bcj2[test], bcj2_memory[test], bounded_workers[test], comparison[bench], efficiency[test], encoder_cancellation[test], encoder_memory_usage[test], lzip[test], lzip_mt[test], lzip_reader[example], lzip_reference[test], lzip_stream[test], lzip_writer[example], lzma2[test], lzma2_mt[test], lzma2_reader[example], lzma2_stream[test], lzma2_writer[example], lzma[test], lzma_reader[example], lzma_rust2[lib], lzma_stream[test], lzma_writer[example], memory_usage[test], multi_writer[test], regression[test], unwind_safe[test], xz[test], xz_mt[test], xz_reader[example], xz_reference[test], xz_stream[test], xz_writer[example]
 Features: default, encoder, lzip, optimization, sha2, std, xz
 Dependencies: sha2
 
@@ -2385,11 +2393,11 @@ Targets: powerfmt[lib]
 Features: alloc, default, macros, std
 Dependencies: (none)
 
-### ppmd-rust 1.4.0
+### ppmd-rust 1.5.2
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/hasenbanck/ppmd-rust
 SPDX-License-Identifier: CC0-1.0 OR MIT-0
-Targets: ppmd_rust[lib], reference_test[test]
+Targets: ppmd_rust[lib], reference_test[test], regression[test]
 Features: default, unstable-tagged-offsets
 Dependencies: (none)
 
@@ -2745,7 +2753,7 @@ Targets: build-script-build[custom-build], mod[bench], rustix[lib]
 Features: all-apis, alloc, core, default, event, fs, io_uring, libc, libc_errno, linux_4_11, linux_5_1, linux_5_11, linux_latest, mm, mount, net, param, pipe, process, pty, rand, runtime, rustc-dep-of-std, rustc-std-workspace-alloc, shm, std, stdio, system, termios, thread, time, try_close, use-explicitly-provided-auxv, use-libc, use-libc-auxv
 Dependencies: bitflags, errno, libc, linux-raw-sys, windows-sys
 
-### rustls 0.23.45
+### rustls 0.23.46
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/rustls/rustls
 SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
@@ -2785,7 +2793,7 @@ Targets: rustls_platform_verifier_android[lib]
 Features: (none)
 Dependencies: (none)
 
-### rustls-webpki 0.103.15
+### rustls-webpki 0.103.16
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/rustls/webpki
 SPDX-License-Identifier: ISC
@@ -3377,11 +3385,11 @@ Targets: tinyvec_macros[lib]
 Features: (none)
 Dependencies: (none)
 
-### tokio 1.53.1
+### tokio 1.53.3
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/tokio-rs/tokio
 SPDX-License-Identifier: MIT
-Targets: _require_full[test], async_send_sync[test], buffered[test], coop_budget[test], dump[test], duplex_stream[test], fs[test], fs_canonicalize_dir[test], fs_copy[test], fs_dir[test], fs_file[test], fs_link[test], fs_open_options[test], fs_open_options_windows[test], fs_remove_dir_all[test], fs_remove_file[test], fs_rename[test], fs_symlink_dir_windows[test], fs_symlink_file_windows[test], fs_try_exists[test], fs_uring[test], fs_uring_cancel_open[test], fs_uring_completed_then_dropped_before_repoll[test], fs_uring_file_read[test], fs_uring_read[test], fs_uring_rename[test], fs_uring_runtime_shutdown[test], fs_uring_statx[test], fs_uring_statx_fd_leak_test[test], fs_write[test], io_async_fd[test], io_async_fd_memory_leak[test], io_async_read[test], io_buf_reader[test], io_buf_writer[test], io_chain[test], io_copy[test], io_copy_bidirectional[test], io_driver[test], io_driver_drop[test], io_fill_buf[test], io_join[test], io_lines[test], io_mem_stream[test], io_panic[test], io_poll_aio[test], io_read[test], io_read_buf[test], io_read_exact[test], io_read_line[test], io_read_to_end[test], io_read_to_string[test], io_read_until[test], io_repeat[test], io_sink[test], io_split[test], io_take[test], io_util_empty[test], io_write[test], io_write_all[test], io_write_all_buf[test], io_write_buf[test], io_write_int[test], join_handle_panic[test], macros_join[test], macros_pin[test], macros_rename_test[test], macros_select[test], macros_test[test], macros_try_join[test], net_bind_resource[test], net_lookup_host[test], net_named_pipe[test], net_panic[test], net_quickack[test], net_unix_pipe[test], no_rt[test], process_arg0[test], process_change_of_runtime[test], process_issue_2174[test], process_issue_42[test], process_issue_7144[test], process_kill_after_wait[test], process_kill_on_drop[test], process_raw_handle[test], process_smoke[test], rt_basic[test], rt_common[test], rt_common_before_park[test], rt_handle[test], rt_handle_block_on[test], rt_local[test], rt_metrics[test], rt_panic[test], rt_poll_callbacks[test], rt_shutdown_err[test], rt_spawn_blocking[test], rt_threaded[test], rt_time_start_paused[test], rt_unstable_eager_driver_handoff[test], rt_unstable_metrics[test], rt_worker_index[test], signal_ctrl_c[test], signal_drop_recv[test], signal_drop_rt[test], signal_drop_signal[test], signal_info[test], signal_multi_rt[test], signal_no_rt[test], signal_notify_both[test], signal_panic[test], signal_realtime[test], signal_twice[test], signal_usr1[test], sync_barrier[test], sync_broadcast[test], sync_broadcast_weak[test], sync_errors[test], sync_mpsc[test], sync_mpsc_weak[test], sync_mutex[test], sync_mutex_owned[test], sync_notify[test], sync_notify_owned[test], sync_once_cell[test], sync_oneshot[test], sync_panic[test], sync_rwlock[test], sync_semaphore[test], sync_semaphore_owned[test], sync_set_once[test], sync_watch[test], task_abort[test], task_blocking[test], task_builder[test], task_hooks[test], task_id[test], task_join_set[test], task_local[test], task_local_set[test], task_panic[test], task_trace_self[test], task_yield_now[test], tcp_accept[test], tcp_connect[test], tcp_echo[test], tcp_into_split[test], tcp_into_std[test], tcp_peek[test], tcp_shutdown[test], tcp_socket[test], tcp_split[test], tcp_stream[test], test_clock[test], time_alt[test], time_interval[test], time_panic[test], time_pause[test], time_rt[test], time_sleep[test], time_timeout[test], time_wasm[test], tokio[lib], tracing_sync[test], tracing_task[test], tracing_time[test], udp[test], uds_cred[test], uds_datagram[test], uds_socket[test], uds_split[test], uds_stream[test], unwindsafe[test]
+Targets: _require_full[test], async_send_sync[test], buffered[test], coop_budget[test], dump[test], duplex_stream[test], fs[test], fs_canonicalize_dir[test], fs_copy[test], fs_dir[test], fs_file[test], fs_link[test], fs_open_options[test], fs_open_options_windows[test], fs_remove_dir_all[test], fs_remove_file[test], fs_rename[test], fs_symlink_dir_windows[test], fs_symlink_file_windows[test], fs_try_exists[test], fs_uring[test], fs_uring_cancel_open[test], fs_uring_completed_then_dropped_before_repoll[test], fs_uring_file_read[test], fs_uring_read[test], fs_uring_rename[test], fs_uring_runtime_shutdown[test], fs_uring_statx[test], fs_uring_statx_fd_leak_test[test], fs_write[test], io_async_fd[test], io_async_read[test], io_buf_reader[test], io_buf_writer[test], io_chain[test], io_copy[test], io_copy_bidirectional[test], io_driver[test], io_driver_drop[test], io_fill_buf[test], io_join[test], io_lines[test], io_mem_stream[test], io_panic[test], io_poll_aio[test], io_read[test], io_read_buf[test], io_read_exact[test], io_read_line[test], io_read_to_end[test], io_read_to_string[test], io_read_until[test], io_repeat[test], io_sink[test], io_split[test], io_take[test], io_util_empty[test], io_write[test], io_write_all[test], io_write_all_buf[test], io_write_buf[test], io_write_int[test], join_handle_panic[test], macros_join[test], macros_pin[test], macros_rename_test[test], macros_select[test], macros_test[test], macros_try_join[test], net_bind_resource[test], net_lookup_host[test], net_named_pipe[test], net_panic[test], net_quickack[test], net_unix_pipe[test], no_rt[test], process_arg0[test], process_change_of_runtime[test], process_issue_2174[test], process_issue_42[test], process_issue_7144[test], process_kill_after_wait[test], process_kill_on_drop[test], process_raw_handle[test], process_smoke[test], rt_basic[test], rt_common[test], rt_common_before_park[test], rt_handle[test], rt_handle_block_on[test], rt_local[test], rt_metrics[test], rt_panic[test], rt_poll_callbacks[test], rt_shutdown_err[test], rt_spawn_blocking[test], rt_threaded[test], rt_time_start_paused[test], rt_unstable_eager_driver_handoff[test], rt_unstable_metrics[test], rt_worker_index[test], signal_ctrl_c[test], signal_drop_recv[test], signal_drop_rt[test], signal_drop_signal[test], signal_info[test], signal_multi_rt[test], signal_no_rt[test], signal_notify_both[test], signal_panic[test], signal_realtime[test], signal_twice[test], signal_usr1[test], sync_barrier[test], sync_broadcast[test], sync_broadcast_weak[test], sync_errors[test], sync_mpsc[test], sync_mpsc_weak[test], sync_mutex[test], sync_mutex_owned[test], sync_notify[test], sync_notify_owned[test], sync_once_cell[test], sync_oneshot[test], sync_panic[test], sync_rwlock[test], sync_semaphore[test], sync_semaphore_owned[test], sync_set_once[test], sync_watch[test], task_abort[test], task_blocking[test], task_builder[test], task_hooks[test], task_id[test], task_join_set[test], task_local[test], task_local_set[test], task_panic[test], task_trace_self[test], task_trace_wake[test], task_yield_now[test], tcp_accept[test], tcp_connect[test], tcp_echo[test], tcp_into_split[test], tcp_into_std[test], tcp_peek[test], tcp_shutdown[test], tcp_socket[test], tcp_split[test], tcp_stream[test], test_clock[test], time_alt[test], time_interval[test], time_panic[test], time_pause[test], time_rt[test], time_sleep[test], time_timeout[test], time_wasm[test], tokio[lib], tracing_sync[test], tracing_task[test], tracing_time[test], udp[test], uds_cred[test], uds_datagram[test], uds_socket[test], uds_split[test], uds_stream[test], unwindsafe[test]
 Features: bytes, default, fs, full, io-std, io-uring, io-util, libc, macros, mio, net, parking_lot, process, rt, rt-multi-thread, schedule-latency, signal, signal-hook-registry, socket2, sync, taskdump, test-util, time, tokio-macros, tracing, windows-sys
 Dependencies: bytes, libc, mio, pin-project-lite, signal-hook-registry, socket2, tokio-macros, windows-sys
 
@@ -3809,12 +3817,12 @@ Targets: dump[example], type1_encoding_parser[lib]
 Features: (none)
 Dependencies: pom
 
-### typed-path 0.12.3
+### typed-path 0.13.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/chipsenkbeil/typed-path
 SPDX-License-Identifier: MIT OR Apache-2.0
 Targets: platform[example], platform_utf8[example], typed[example], typed_path[lib], typed_utf8[example], unix[example], unix_utf8[example], windows[example], windows_utf8[example]
-Features: default, std
+Features: default, nightly-wasip2, serde, std
 Dependencies: (none)
 
 ### typenum 1.20.1
@@ -4177,7 +4185,7 @@ Targets: benchmark[example], serde[test], web_time[lib]
 Features: serde
 Dependencies: js-sys, wasm-bindgen
 
-### webpki-root-certs 1.0.9
+### webpki-root-certs 1.0.10
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/rustls/webpki-roots
 SPDX-License-Identifier: CDLA-Permissive-2.0
@@ -4193,7 +4201,7 @@ Targets: verify[test], webpki_roots[lib]
 Features: (none)
 Dependencies: webpki-roots
 
-### webpki-roots 1.0.9
+### webpki-roots 1.0.10
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/rustls/webpki-roots
 SPDX-License-Identifier: CDLA-Permissive-2.0
@@ -4633,13 +4641,13 @@ Targets: derives[example], make[example], make_var[example], zerovec_derive[proc
 Features: (none)
 Dependencies: proc-macro2, quote, syn
 
-### zip 8.6.0
+### zip 9.3.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/zip-rs/zip2
 SPDX-License-Identifier: MIT
 Targets: zip[lib]
-Features: _arbitrary, _bzip2_any, _deflate-any, aes-crypto, bitstream-io, bzip2, bzip2-rs, chrono, default, deflate, deflate-flate2, deflate-flate2-zlib, deflate-flate2-zlib-ng, deflate-flate2-zlib-ng-compat, deflate-flate2-zlib-rs, deflate-zopfli, deflate64, deprecated-time, getrandom, jiff-02, legacy-zip, lzma, nt-time, ppmd, time, unreserved, xz, zstd
-Dependencies: aes, bzip2, constant_time_eq, crc32fast, deflate64, flate2, getrandom, hmac, indexmap, lzma-rust2, memchr, pbkdf2, ppmd-rust, sha1, time, typed-path, zeroize, zopfli, zstd
+Features: _arbitrary, _bzip2_any, _deflate-any, _miri_compatible_features, aes-crypto, bitstream-io, bzip2, bzip2-rs, chrono, default, deflate, deflate-flate2, deflate-flate2-zlib, deflate-flate2-zlib-ng, deflate-flate2-zlib-ng-compat, deflate-flate2-zlib-rs, deflate-zopfli, deflate64, getrandom, jiff-02, legacy-zip, lzma, nt-time, ppmd, rayon, time, unreserved, xz, zstd
+Dependencies: aes, bzip2, constant_time_eq, crc32fast, deflate64, flate2, getrandom, hmac, indexmap, libc, lzma-rust2, memchr, nix, pbkdf2, ppmd-rust, sha1, time, typed-path, windows-sys, zeroize, zopfli, zstd
 
 ### zlib-rs 0.6.7
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -4673,12 +4681,28 @@ Targets: basic[example], benchmark[example], issue_182[test], stream[example], t
 Features: arrays, bindgen, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, thin, thin-lto, wasm, zdict_builder, zstdmt
 Dependencies: zstd-safe
 
+### zstd 0.14.3
+Source: registry+https://github.com/rust-lang/crates.io-index
+Package source: https://github.com/gyscos/zstd-rs
+SPDX-License-Identifier: BSD-3-Clause
+Targets: basic[example], benchmark[example], invalid_dictionary[test], issue_182[test], issue_251[test], issue_381[test], issue_382[test], stream[example], throughput[example], train[example], with_rust_allocator[test], with_rust_allocator_dictionaries[test], with_rust_allocator_stream[test], zstd[example], zstd[lib], zstdcat[example]
+Features: arrays, bindgen, cmake, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, thin, thin-lto, vendored, wasm, with-rust-allocator, zdict_builder, zstdmt
+Dependencies: zstd-safe
+
 ### zstd-safe 7.4.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/gyscos/zstd-rs
 SPDX-License-Identifier: BSD-3-Clause
 Targets: build-script-build[custom-build], zstd_safe[lib]
 Features: arrays, bindgen, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, seekable, std, thin, thin-lto, zdict_builder, zstdmt
+Dependencies: zstd-sys
+
+### zstd-safe 8.2.0
+Source: registry+https://github.com/rust-lang/crates.io-index
+Package source: https://github.com/gyscos/zstd-rs
+SPDX-License-Identifier: BSD-3-Clause
+Targets: build-script-build[custom-build], with_rust_allocator[test], with_rust_allocator_clones[test], with_rust_allocator_dictionaries[test], with_rust_allocator_one_shot[test], zstd_safe[lib]
+Features: arrays, bindgen, cmake, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, seekable, std, thin, thin-lto, vendored, with-rust-allocator, zdict_builder, zstdmt
 Dependencies: zstd-sys
 
 ### zstd-sys 2.1.2+zstd.1.5.7
