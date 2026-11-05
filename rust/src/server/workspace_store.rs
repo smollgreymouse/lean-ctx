@@ -781,6 +781,7 @@ fn resolve_with_bindings(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resolve(value: StoredWorkspace) -> ResolvedWorkspace {
     resolve_with_bindings(value, std::collections::BTreeMap::new())
 }
@@ -984,6 +985,7 @@ fn atomic_save(path: &Path, value: &StoredWorkspace) -> Result<(), String> {
     result
 }
 
+#[cfg(test)]
 pub(crate) fn load(path: &Path) -> Result<StoredWorkspace, String> {
     #[cfg(unix)]
     {
