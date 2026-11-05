@@ -290,7 +290,16 @@ fn checkout_generation(path: &Path) -> Option<String> {
     {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(path).ok()?;
-        Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
+        // Directory inodes can be recycled immediately after `git worktree remove`.
+        // Include the inode change timestamp to distinguish a newly-created
+        // admin slot at the same path, without writing into Git's metadata.
+        Some(format!(
+            "unix:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        ))
     }
     #[cfg(windows)]
     {

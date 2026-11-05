@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-use super::*;
+use super::{
+    Path, WorkspaceRootState, initialized_store, load_resolved, metadata_path, mutate,
+    reconcile_metadata,
+};
 
 pub(crate) fn debug_worktree_lifecycle_self_test() -> Result<(), String> {
     use std::fs;

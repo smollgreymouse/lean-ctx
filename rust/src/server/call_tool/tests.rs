@@ -1529,6 +1529,7 @@ mod shell_outcome_tests {
 
         let server_handler = include_str!("../server_handler.rs");
         let guarded = include_str!("guarded.rs");
+        let guarded_driver = include_str!("guarded/driver.rs");
         let pipeline = include_str!("pipeline.rs");
         let dispatch = include_str!("../dispatch/mod.rs");
         let resources = include_str!("../resources.rs");
@@ -1540,8 +1541,9 @@ mod shell_outcome_tests {
         assert!(server_handler.contains("self.call_tool_guarded(request)"));
         // The guarded lifecycle driver runs the one pipeline in its two
         // stages: dispatch, then reversible post-processing.
-        assert!(guarded.contains("super::pipeline::dispatch_primitive("));
-        assert!(guarded.contains("super::pipeline::reversible_post_process("));
+        assert!(guarded.contains("mod driver;"));
+        assert!(guarded_driver.contains("super::super::pipeline::dispatch_primitive("));
+        assert!(guarded_driver.contains("super::super::pipeline::reversible_post_process("));
         // Dispatch runs under source-authority capture; content decisions go
         // through the shared policy guard (redaction or withholding) and the
         // sensitivity floor.

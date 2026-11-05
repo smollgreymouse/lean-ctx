@@ -1034,7 +1034,7 @@ fn reject_same_repository_worktree(
                 && !checkout_matches_binding(candidate, binding)
             {
                 return Err(format!(
-                    "Workspace root is another worktree generation/checkout of the same local Git                      repository as configured root {configured}; worktree topology does not grant                      independent Workspace authority"
+                    "Workspace root is a sibling worktree (another worktree generation/checkout of the same local Git repository) of configured root {configured}; worktree topology does not grant independent Workspace authority"
                 ));
             }
             continue;
@@ -1059,7 +1059,7 @@ fn reject_same_repository_worktree(
             && existing.checkout_key != candidate.checkout_key
         {
             return Err(format!(
-                "Workspace root is a sibling worktree of configured root {configured}; worktree                  topology does not grant independent Workspace authority"
+                "Workspace root is a sibling worktree of configured root {configured}; worktree topology does not grant independent Workspace authority"
             ));
         }
     }
