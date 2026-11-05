@@ -89,15 +89,10 @@ impl McpTool for CtxShellTool {
             .ok_or_else(|| ErrorData::invalid_params("command is required", None))?;
         let timeout_ms = get_int(args, "timeout_ms").and_then(|n| u64::try_from(n).ok());
 
-        // #1811: the write-doctrine guard classifies the *destination*, so a
-        // relative redirect target only means something once it is placed
-        // against the directory the command runs in. That directory is not the
-        // `cwd` argument: `effective_cwd_checked` replaces a jail-rejected one
-        // with the project root, and falls back to the session cwd when none
-        // was passed. So it is resolved once, here, and the same value feeds
-        // both the guard and the run below — resolving it twice would let the
-        // two answers drift, and a guard that judged a directory the command
-        // never ran in is exactly the bug #1811 reports.
+        // #1811: resolve the run directory before validating redirect targets.
+        // A rejected explicit cwd is blocked before any possible execution;
+        // the fallback root returned by the legacy session resolver is never
+        // used as a substitute execution directory.
         let explicit_cwd = get_str(args, "cwd");
         let had_explicit_cwd = explicit_cwd.is_some();
         // Without a session (one-shot CLI contexts) the run directory cannot be
@@ -116,6 +111,10 @@ impl McpTool for CtxShellTool {
             })?),
             None => None,
         };
+
+        if let Some((_, Some(reason))) = resolved_cwd.as_ref() {
+            return Ok(blocked_cwd_output(explicit_cwd.as_deref(), reason));
+        }
 
         // The write-doctrine check (no `>`, `tee`, heredoc-to-file, curl -o, …)
         // is an MCP-payload-safety convention, not a security boundary, so it is
@@ -203,16 +202,9 @@ impl McpTool for CtxShellTool {
             let Some((effective_cwd, cwd_jail_reason)) = resolved_cwd else {
                 return Err(ErrorData::internal_error("session not available", None));
             };
-            // A `cwd` rejected by the project-root jail is silently replaced with
-            // the root (deliberate sandboxing). Surface that swap as a one-line
-            // hint so the caller does not mistake the run dir for the requested
-            // one (#629); appended at the end of the output like the other hints.
-            let cwd_jail_reason_was_none = cwd_jail_reason.is_none();
-            let cwd_jail_hint = cwd_jail_reason.map_or_else(String::new, |reason| {
-                format!(
-                    "\n[cwd: requested path rejected by project-root jail ({reason}) \u{2014} ran in {effective_cwd} instead]"
-                )
-            });
+            // A rejected explicit cwd has already returned before any shell
+            // execution. This assertion prevents fallback-to-root regressions.
+            debug_assert!(cwd_jail_reason.is_none());
 
             {
                 let Some(mut session) = crate::server::bounded_lock::write_for(
@@ -250,7 +242,7 @@ impl McpTool for CtxShellTool {
                 // telling us where it now works (worktree switches arrive
                 // this way, not as `cd` commands) — persist it so path
                 // resolution's divergence check tracks the live checkout.
-                if had_explicit_cwd && cwd_jail_reason_was_none {
+                if had_explicit_cwd {
                     session.note_explicit_cwd(&effective_cwd);
                 }
                 session.update_shell_cwd(&command);
@@ -477,9 +469,7 @@ impl McpTool for CtxShellTool {
             // timed-out command with a successful empty result.
             let exit_suffix = crate::shell::exit_status::exit_footer(exit_code);
             let nudge = if raw { "" } else { search_tool_nudge(&command) };
-            let final_out = format!(
-                "{result_out}{tee_hint}{shell_mismatch}{cwd_jail_hint}{nudge}{exit_suffix}"
-            );
+            let final_out = format!("{result_out}{tee_hint}{shell_mismatch}{nudge}{exit_suffix}");
             let final_out = if let Some(block) = proactive_block {
                 format!("{final_out}{block}")
             } else {
@@ -519,6 +509,30 @@ fn shell_access_denial(ctx: &ToolContext) -> Option<String> {
     }
 
     None
+}
+
+/// A rejected explicit working directory is a hard stop, never a request to
+/// execute in the session's primary root. Only a genuine checkout gets the
+/// Harr Workspace recovery hint; unrelated paths remain denied.
+fn blocked_cwd_output(requested: Option<&str>, reason: &str) -> ToolOutput {
+    let requested = requested.unwrap_or("<unspecified>");
+    let mut message = format!(
+        "[CWD_OUTSIDE_WORKSPACE] Requested working directory rejected: {requested}\nReason: {reason}\nCommand NOT executed."
+    );
+    if let Some(checkout) =
+        crate::core::git_checkout::nearest_checkout_root(std::path::Path::new(requested))
+    {
+        message.push_str(&format!(
+            "\nGit checkout/worktree detected at {}. Register its exact path using the direct Harr Workspace MCP: harr-workspace::workspace_get(project=<existing primary root>), then harr-workspace::workspace_sync(project=<existing primary root>, paths=[\"{}\"]). Verify the root is active with workspace_get and retry. Do not register a broad parent or use ctx_shell to modify Workspace authority.",
+            checkout.display(),
+            checkout.display()
+        ));
+    }
+    ToolOutput {
+        shell_outcome: Some(ShellOutcome::Blocked),
+        content_blocks: None,
+        ..ToolOutput::simple(message)
+    }
 }
 
 fn resolve_effective_cwd(
@@ -1011,7 +1025,12 @@ fn resolve_reroute_cwd(
     };
     let guard =
         crate::server::bounded_lock::read_for(session_lock, "ctx_shell_cwd", SESSION_LOCK_BUDGET);
-    let (cwd, _) = resolve_effective_cwd(guard, explicit_cwd)?;
+    let (cwd, rejection) = resolve_effective_cwd(guard, explicit_cwd)?;
+    if let Some(reason) = rejection {
+        return Err(crate::server::tool_trait::tool_execution_error(
+            blocked_cwd_output(explicit_cwd, &reason).text,
+        ));
+    }
     Ok(Some(cwd))
 }
 
