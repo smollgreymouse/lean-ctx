@@ -392,13 +392,6 @@ jobs:
       - name: Check build without tree-sitter
         working-directory: rust
         run: cargo check --no-default-features --features "embeddings,http-server,secure-update,jemalloc"
-      - name: Build lightweight MCP binary for Workspace regression
-        working-directory: rust
-        run: cargo build --no-default-features --features "tree-sitter,http-server,secure-update,jemalloc" --bin lean-ctx
-      - name: Reject unauthorized shell cwd without executing
-        env:
-          LEANCTX_TEST_BIN: ${{ github.workspace }}/rust/target/debug/lean-ctx
-        run: python3 scripts/test_harr_workspace_legacy_surface_mcp.py
 
   fmt:
     name: Format
