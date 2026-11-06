@@ -579,6 +579,24 @@ fn parse_worktree_record(
         .ok_or_else(|| GitCheckoutError::InvalidMetadata("worktree record has no root".into()))?;
     let exists = root.is_dir();
     let canonical_root = exists.then(|| crate::core::pathutil::safe_canonicalize_or_self(&root));
+    // A deleted worktree has no leaf to canonicalize. On Windows the Git
+    // metadata path may use an 8.3 ancestor alias (RUNNER~1), while the
+    // registered root was discovered with its long name. Normalize only the
+    // existing parent for stale *metadata*; this never makes a missing root
+    // active or creates path-based Workspace authority.
+    #[cfg(windows)]
+    let root = if !exists {
+        root.parent()
+            .zip(root.file_name())
+            .and_then(|(parent, name)| {
+                crate::core::pathutil::canonicalize_raw(parent)
+                    .ok()
+                    .map(|canonical| canonical.join(name))
+            })
+            .unwrap_or(root)
+    } else {
+        root
+    };
     let git_dir = if let Some(ref canonical_root) = canonical_root {
         match discover_checkout(canonical_root).ok().flatten() {
             Some(identity)
