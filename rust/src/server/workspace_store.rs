@@ -549,7 +549,9 @@ fn validate_configured_root(root: &str) -> Result<(), String> {
 }
 
 pub(crate) fn validate_root(root: &str) -> Result<String, String> {
-    let canonical = Path::new(root).canonicalize().map_err(|e| e.to_string())?;
+    // Keep Windows long/short and verbatim path spellings consistent with Git checkout discovery.
+    let canonical =
+        crate::core::pathutil::canonicalize_raw(Path::new(root)).map_err(|e| e.to_string())?;
     if !canonical.is_dir() || crate::core::pathutil::is_broad_or_unsafe_root(&canonical) {
         return Err("Workspace root is unavailable or unsafe".into());
     }

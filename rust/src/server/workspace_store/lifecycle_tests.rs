@@ -31,6 +31,15 @@ fn git(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+// Use the canonical root spelling even on Windows hosts whose TEMP environment
+// uses an 8.3 alias (RUNNER~1), which differs from the long name returned by
+// Win32 canonicalization and Git checkout discovery.
+fn fixture_root(base: &Path, name: &str) -> std::path::PathBuf {
+    crate::core::pathutil::canonicalize_raw(base)
+        .expect("canonical test fixture parent")
+        .join(name)
+}
+
 struct RepoFixture {
     tmp: tempfile::TempDir,
     main: std::path::PathBuf,
@@ -39,7 +48,7 @@ struct RepoFixture {
 impl RepoFixture {
     fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let main = tmp.path().join("main");
+        let main = fixture_root(tmp.path(), "main");
         git(tmp.path(), &["init", main.to_str().unwrap()]);
         git(
             &main,
@@ -54,7 +63,7 @@ impl RepoFixture {
     }
 
     fn linked(&self, name: &str) -> std::path::PathBuf {
-        let path = self.tmp.path().join(name);
+        let path = fixture_root(self.tmp.path(), name);
         git(
             &self.main,
             &["worktree", "add", path.to_str().unwrap(), "feature-a"],
@@ -153,8 +162,8 @@ fn legacy_store_without_sidecar_can_be_identity_migrated_in_place() {
 #[test]
 fn missing_additional_root_is_degraded_not_store_corruption() {
     let tmp = tempfile::tempdir().unwrap();
-    let primary = tmp.path().join("primary");
-    let additional = tmp.path().join("additional");
+    let primary = fixture_root(tmp.path(), "primary");
+    let additional = fixture_root(tmp.path(), "additional");
     fs::create_dir(&primary).unwrap();
     fs::create_dir(&additional).unwrap();
     let store = tmp.path().join("workspace.json");
@@ -177,8 +186,8 @@ fn missing_additional_root_is_degraded_not_store_corruption() {
 #[test]
 fn missing_additional_root_can_be_removed_after_external_delete() {
     let tmp = tempfile::tempdir().unwrap();
-    let primary = tmp.path().join("primary");
-    let additional = tmp.path().join("additional");
+    let primary = fixture_root(tmp.path(), "primary");
+    let additional = fixture_root(tmp.path(), "additional");
     fs::create_dir(&primary).unwrap();
     fs::create_dir(&additional).unwrap();
     let store = tmp.path().join("workspace.json");
@@ -201,7 +210,7 @@ fn missing_additional_root_can_be_removed_after_external_delete() {
 #[test]
 fn missing_legacy_additional_git_worktree_does_not_block_independent_git_addition() {
     let tmp = tempfile::tempdir().unwrap();
-    let primary = tmp.path().join("primary");
+    let primary = fixture_root(tmp.path(), "primary");
     fs::create_dir(&primary).unwrap();
     let store = tmp.path().join("workspace.json");
     initialized_store(&store, primary.to_str().unwrap()).unwrap();
@@ -282,13 +291,13 @@ fn legacy_store_does_not_grant_authority_to_primary_sibling_worktree() {
 #[test]
 fn legacy_two_additional_sibling_worktrees_are_both_fail_closed() {
     let primary_tmp = tempfile::tempdir().unwrap();
-    let primary = primary_tmp.path().join("primary");
+    let primary = fixture_root(primary_tmp.path(), "primary");
     fs::create_dir(&primary).unwrap();
 
     let fixture = RepoFixture::new();
     git(&fixture.main, &["branch", "feature-b"]);
     let first = fixture.linked("legacy-first");
-    let second = fixture.tmp.path().join("legacy-second");
+    let second = fixture_root(fixture.tmp.path(), "legacy-second");
     git(
         &fixture.main,
         &["worktree", "add", second.to_str().unwrap(), "feature-b"],
@@ -339,13 +348,13 @@ fn sibling_worktree_of_primary_repository_is_not_additional_authority() {
 #[test]
 fn sibling_worktrees_cannot_both_be_additional_roots() {
     let primary_tmp = tempfile::tempdir().unwrap();
-    let primary = primary_tmp.path().join("primary");
+    let primary = fixture_root(primary_tmp.path(), "primary");
     fs::create_dir(&primary).unwrap();
 
     let fixture = RepoFixture::new();
     git(&fixture.main, &["branch", "feature-b"]);
     let first = fixture.linked("first");
-    let second = fixture.tmp.path().join("second");
+    let second = fixture_root(fixture.tmp.path(), "second");
     git(
         &fixture.main,
         &["worktree", "add", second.to_str().unwrap(), "feature-b"],
@@ -367,12 +376,12 @@ fn sibling_worktrees_cannot_both_be_additional_roots() {
 #[test]
 fn adding_current_path_of_moved_additional_rebinds_instead_of_duplicating() {
     let primary_tmp = tempfile::tempdir().unwrap();
-    let primary = primary_tmp.path().join("primary");
+    let primary = fixture_root(primary_tmp.path(), "primary");
     fs::create_dir(&primary).unwrap();
 
     let fixture = RepoFixture::new();
     let linked = fixture.linked("linked-rebind");
-    let moved = fixture.tmp.path().join("moved-rebind");
+    let moved = fixture_root(fixture.tmp.path(), "moved-rebind");
     let store = primary_tmp.path().join("workspace-rebind.json");
     initialized_store(&store, primary.to_str().unwrap()).unwrap();
     mutate(&store, 1, linked.to_str().unwrap(), true).unwrap();
@@ -407,7 +416,7 @@ fn adding_current_path_of_moved_additional_rebinds_instead_of_duplicating() {
 fn linked_primary_follows_git_worktree_move_by_checkout_identity() {
     let fixture = RepoFixture::new();
     let linked = fixture.linked("linked");
-    let moved = fixture.tmp.path().join("moved");
+    let moved = fixture_root(fixture.tmp.path(), "moved");
     let store = fixture.store("workspace.json");
     initialized_store(&store, linked.to_str().unwrap()).unwrap();
 
@@ -514,12 +523,12 @@ fn foreign_checkout_reusing_old_worktree_path_cannot_resurrect_authority() {
 #[test]
 fn removing_moved_additional_by_current_path_uses_checkout_identity() {
     let primary_tmp = tempfile::tempdir().unwrap();
-    let primary = primary_tmp.path().join("primary");
+    let primary = fixture_root(primary_tmp.path(), "primary");
     fs::create_dir(&primary).unwrap();
 
     let fixture = RepoFixture::new();
     let linked = fixture.linked("linked");
-    let moved = fixture.tmp.path().join("moved");
+    let moved = fixture_root(fixture.tmp.path(), "moved");
     let store = primary_tmp.path().join("workspace.json");
     initialized_store(&store, primary.to_str().unwrap()).unwrap();
     let added = mutate(&store, 1, linked.to_str().unwrap(), true).unwrap();

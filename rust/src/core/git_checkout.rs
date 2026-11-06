@@ -683,7 +683,9 @@ mod tests {
     impl RepoFixture {
         fn new() -> Self {
             let tmp = tempfile::tempdir().expect("tempdir");
-            let main = tmp.path().join("main");
+            let main = crate::core::pathutil::canonicalize_raw(tmp.path())
+                .expect("canonical fixture parent")
+                .join("main");
             git(tmp.path(), &["init", main.to_str().unwrap()]);
             git(&main, &["config", "user.email", "test@example.invalid"]);
             git(&main, &["config", "user.name", "LeanCTX Test"]);
@@ -696,7 +698,9 @@ mod tests {
         }
 
         fn worktree(&self, name: &str, branch: &str) -> PathBuf {
-            let path = self.tmp.path().join(name);
+            let path = crate::core::pathutil::canonicalize_raw(self.tmp.path())
+                .expect("canonical fixture parent")
+                .join(name);
             git(
                 &self.main,
                 &["worktree", "add", path.to_str().unwrap(), branch],
