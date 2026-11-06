@@ -327,7 +327,10 @@ pub async fn call_tool_on_with_progress(
 
         loop {
             tokio::select! {
-                result = &mut response => break result,
+                // Progress messages are sent before the terminal JSON-RPC
+                // response but their callbacks may be scheduled separately.
+                // Prefer queued progress when both branches are ready.
+                biased;
                 notification = subscriber.next() => {
                     if let Some(notification) = notification {
                         callback(ProgressUpdate {
@@ -336,6 +339,24 @@ pub async fn call_tool_on_with_progress(
                             message: notification.message,
                         });
                     }
+                }
+                result = &mut response => {
+                    // The rmcp response and progress notifications can be
+                    // dispatched by independent tasks. Let already-sent
+                    // notifications reach this subscriber before dropping it.
+                    // The fixed 30-ms deadline bounds post-response latency
+                    // even if the remote server keeps sending progress.
+                    let deadline = tokio::time::Instant::now() + Duration::from_millis(30);
+                    while let Ok(Some(notification)) =
+                        tokio::time::timeout_at(deadline, subscriber.next()).await
+                    {
+                        callback(ProgressUpdate {
+                            progress: notification.progress,
+                            total: notification.total,
+                            message: notification.message,
+                        });
+                    }
+                    break result;
                 }
             }
         }
