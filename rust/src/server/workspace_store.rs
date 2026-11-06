@@ -609,13 +609,31 @@ fn checkout_matches_binding(
             .is_none_or(|generation| checkout.checkout_generation.as_ref() == Some(generation))
 }
 
+// Only Windows path spelling is normalized here. Unix backslashes are literal
+// filename bytes; they must never be treated as directory separators.
+fn canonical_root_matches_configured(canonical: &Path, root: &str) -> bool {
+    #[cfg(windows)]
+    {
+        crate::core::pathutil::normalize_tool_path_lexical(&canonical.to_string_lossy())
+            == crate::core::pathutil::normalize_tool_path_lexical(root)
+    }
+    #[cfg(not(windows))]
+    {
+        canonical.to_string_lossy() == root
+    }
+}
+
 fn resolve_root(root: &str, binding: Option<&StoredCheckoutBinding>) -> WorkspaceRootStatus {
     let path = Path::new(root);
-    match path.canonicalize() {
+    match crate::core::pathutil::canonicalize_raw(path) {
         Ok(canonical)
             if canonical.is_dir()
                 && !crate::core::pathutil::is_broad_or_unsafe_root(&canonical)
-                && canonical.to_string_lossy() == root =>
+                // Compare canonical paths using the platform's existing lexical
+                // spelling normalization. On Windows this strips the verbatim
+                // prefix and unifies separators, but a symlink/8.3 alias still
+                // cannot evade the realpath comparison.
+                && canonical_root_matches_configured(&canonical, root) =>
         {
             if let Some(binding) = binding {
                 match crate::core::git_checkout::discover_checkout(&canonical) {

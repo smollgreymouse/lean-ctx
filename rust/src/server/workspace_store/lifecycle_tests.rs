@@ -35,9 +35,11 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 // uses an 8.3 alias (RUNNER~1), which differs from the long name returned by
 // Win32 canonicalization and Git checkout discovery.
 fn fixture_root(base: &Path, name: &str) -> std::path::PathBuf {
-    crate::core::pathutil::canonicalize_raw(base)
-        .expect("canonical test fixture parent")
-        .join(name)
+    let parent =
+        crate::core::pathutil::canonicalize_raw(base).expect("canonical test fixture parent");
+    // Keep one spelling after appending: on Windows `Path::join` would add
+    // a backslash to the forward-slash path emitted by strip_verbatim.
+    std::path::PathBuf::from(format!("{}/{name}", parent.display()))
 }
 
 struct RepoFixture {
