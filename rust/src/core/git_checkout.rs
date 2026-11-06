@@ -286,13 +286,25 @@ fn opaque_key(parts: &[&Path]) -> String {
 /// but Git may reuse that path after a remove/re-add. File identity distinguishes
 /// those generations without writing marker files into Git's private metadata.
 fn checkout_generation(path: &Path) -> Option<String> {
+    // `commondir` is immutable for the lifetime of a linked-worktree admin
+    // slot. Git edits its parent directory, HEAD and gitdir during ordinary
+    // switch/move operations, so their change times are NOT generations.
+    // `description` is created once for the main repository's admin directory.
+    // A freshly created checkout gets a newly created marker even if the
+    // filesystem recycles the directory inode immediately after deletion.
+    let marker = if path.join("commondir").is_file() {
+        path.join("commondir")
+    } else if path.join("description").is_file() {
+        path.join("description")
+    } else {
+        path.to_path_buf()
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::metadata(path).ok()?;
-        // Directory inodes can be recycled immediately after `git worktree remove`.
-        // Include the inode change timestamp to distinguish a newly-created
-        // admin slot at the same path, without writing into Git's metadata.
+        let metadata = std::fs::metadata(&marker).ok()?;
+        // Include nanosecond ctime for the stable marker to avoid immediate
+        // inode-reuse collisions without changing generation on HEAD updates.
         Some(format!(
             "unix:{}:{}:{}:{}",
             metadata.dev(),
@@ -310,7 +322,7 @@ fn checkout_generation(path: &Path) -> Option<String> {
             FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
         };
 
-        let wide = path
+        let wide = marker
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
@@ -352,7 +364,7 @@ fn checkout_generation(path: &Path) -> Option<String> {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = path;
+        let _ = marker;
         None
     }
 }
@@ -771,7 +783,10 @@ mod tests {
             .unwrap()
             .expect("stable worktree admin slot should resolve the moved checkout");
         assert_eq!(rebound.checkout_key, before.checkout_key);
-        assert_eq!(rebound.root, moved.canonicalize().unwrap());
+        assert_eq!(
+            rebound.root,
+            crate::core::pathutil::canonicalize_raw(&moved).unwrap()
+        );
     }
 
     #[test]

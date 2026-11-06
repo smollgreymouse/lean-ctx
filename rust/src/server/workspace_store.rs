@@ -967,7 +967,17 @@ fn atomic_save_metadata(path: &Path, metadata: &StoredWorkspaceMetadata) -> Resu
     atomic_save_metadata_records(path, std::slice::from_ref(metadata))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn sync_parent(_path: &Path) -> Result<(), String> {
+    // Windows directory handles cannot be opened/flushed through std::fs::File:
+    // this always returned ERROR_ACCESS_DENIED after a successfully synced
+    // Workspace file. File::sync_all() still protects the file contents.
+    // Directory-entry durability is not claimed on Windows; the journal and
+    // revision fence handle interrupted updates and reject mixed revisions.
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn sync_parent(path: &Path) -> Result<(), String> {
     let parent = path.parent().ok_or("Missing parent directory")?;
     std::fs::File::open(parent)
