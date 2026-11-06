@@ -4,9 +4,9 @@ authority = "THIRD_PARTY_NOTICES"
 
 [inputs]
 cargo_lock = "rust/Cargo.lock"
-cargo_lock_sha256 = "a9d8b3bb6d65830fb64bad579692ec7819b0c4b0948923e22f6c2b701aa6fa6f"
+cargo_lock_sha256 = "c9d6238beeb2450cbbdcdaaf951eb386332bbb77cccbd4278d601b26d5e6f346"
 sbom = "SBOM.cdx.json"
-sbom_sha256 = "0340707e27976af0cb67d49928f13129e4b21dcbea6ebdb11c23f795d90cb1df"
+sbom_sha256 = "7a6dee11bc26b713b2c153b993889953e8b951c2cd6e635133a3cd280444925f"
 npm_lock = "packages/pi-lean-ctx/package-lock.json"
 npm_lock_sha256 = "3ca97565d7f519821a03e2360293ab11312a72d3efd1c7b5d81674e4dffba361"
 
@@ -216,16 +216,17 @@ evidence_paths = [
 [[assets]]
 id = "vendored-rmcp"
 path = "rust/crates/vendor/rmcp"
-sha256 = "c516ce111faf9d175add0877b5535208e4e7f4df4f48f9012727da7e865f85fa"
+sha256 = "d20747813f065b99bda9f5960f7c9d1572df119390713da86eda68ad433d5572"
 version = "2.0.0"
 source = "https://github.com/modelcontextprotocol/rust-sdk/tree/rmcp-v2.0.0"
 spdx = "Apache-2.0"
 license_text_path = "LICENSES/Apache-2.0.txt"
 modified = true
-modification_summary = "LeanCTX carries the local JoinSet response-send drain patch described in rust/Cargo.toml, and an OAuth discovery patch in src/transport/auth.rs (#1391: a 200 status page on the MCP endpoint is not taken as RFC 9728 resource metadata); upstream rmcp 2.0.0 is retained as the provenance base."
+modification_summary = "LeanCTX carries the local JoinSet response-send drain patch described in rust/Cargo.toml, an OAuth discovery patch in src/transport/auth.rs (#1391: a 200 status page on the MCP endpoint is not taken as RFC 9728 resource metadata), and progress forwarding/order fixes in src/service.rs; upstream rmcp 2.0.0 is retained as the provenance base."
 evidence_paths = [
   "rust/crates/vendor/rmcp/Cargo.toml",
   "rust/crates/vendor/rmcp/src/transport/auth.rs",
+  "rust/crates/vendor/rmcp/src/service.rs",
   "rust/Cargo.toml",
 ]
 

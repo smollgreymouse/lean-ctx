@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import json, os, pathlib, signal, subprocess, tempfile, time, shutil
+# SPDX-License-Identifier: Apache-2.0
+import json, os, pathlib, subprocess, tempfile, time, shutil
 
 binary = os.environ['LEANCTX_TEST_BIN']
 base = pathlib.Path(tempfile.mkdtemp(prefix='leanctx-store-race-'))

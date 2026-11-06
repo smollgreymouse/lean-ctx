@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Harr Workspace shell cwd regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/harr-workspace-cwd-regression.yml'
+      - 'rust/src/tools/registered/ctx_shell.rs'
+      - 'rust/src/tools/registered/ctx_shell_tests.rs'
+      - 'rust/src/server/workspace_store.rs'
+      - 'scripts/test_harr_workspace_legacy_surface_mcp.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reject-unregistered-cwd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CARGO_BUILD_JOBS: 2
+      LEAN_CTX_EMBEDDINGS_AUTO_DOWNLOAD: "0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: rust -> target
+      - name: Build MCP binary
+        working-directory: rust
+        run: cargo build --locked -j 2 --no-default-features --features "tree-sitter,http-server,secure-update,jemalloc" --bin lean-ctx
+      - name: Verify unauthorized cwd is rejected without execution
+        env:
+          LEANCTX_TEST_BIN: ${{ github.workspace }}/rust/target/debug/lean-ctx
+        run: python3 scripts/test_harr_workspace_legacy_surface_mcp.py

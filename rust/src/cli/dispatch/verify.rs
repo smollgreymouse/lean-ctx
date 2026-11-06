@@ -132,7 +132,10 @@ fn read_zip_entries(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             continue;
         }
 
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .with_context(|| format!("invalid ZIP entry name at index {index}"))?
+            .into_owned();
         if entries.contains_key(&name) {
             anyhow::bail!("duplicate ZIP entry: {name}");
         }

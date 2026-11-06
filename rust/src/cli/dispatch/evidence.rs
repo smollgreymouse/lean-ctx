@@ -660,7 +660,10 @@ fn inspect(path: &Path) -> Result<()> {
         let mut entry = archive
             .by_index(index)
             .with_context(|| format!("read ZIP entry {index}"))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .with_context(|| format!("invalid ZIP entry name at index {index}"))?
+            .into_owned();
         if name == "manifest.json" {
             let mut contents = String::new();
             entry

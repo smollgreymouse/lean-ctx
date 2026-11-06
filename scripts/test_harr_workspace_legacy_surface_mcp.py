@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Real stdio MCP regression for Harr's backward-compatible Workspace tool surface."""
 import json, os, select, subprocess, tempfile, time
 from pathlib import Path
@@ -63,6 +64,22 @@ enabled = true
 
         extra_shell=text(call('ctx_shell',{'command':'pwd','cwd':str(extra.resolve())}))
         assert str(extra.resolve()) in extra_shell,extra_shell
+
+        # A newly created, unregistered checkout must never execute against
+        # the primary root (the old silent cwd-substitution behavior).
+        unregistered=base/'unregistered-checkout'; unregistered.mkdir()
+        (unregistered/'.git').write_text('gitdir: /nonexistent/worktrees/test\n')
+        marker=primary/'must-not-create.txt'
+        rejected=call('ctx_shell',{'cwd':str(unregistered.resolve()),'command':'touch must-not-create.txt'})
+        rejection=text(rejected)
+        assert 'CWD_OUTSIDE_WORKSPACE' in rejection and 'Command NOT executed' in rejection,rejection
+        assert 'harr-workspace::workspace_sync' in rejection,rejection
+        assert rejected.get('result',{}).get('isError') is True,rejected
+        assert not marker.exists() and not (unregistered/'must-not-create.txt').exists(),rejected
+        ordinary=base/'ordinary-unregistered'; ordinary.mkdir()
+        ordinary_rejection=text(call('ctx_shell',{'cwd':str(ordinary.resolve()),'command':'touch must-not-create.txt'}))
+        assert 'CWD_OUTSIDE_WORKSPACE' in ordinary_rejection and 'harr-workspace::workspace_sync' not in ordinary_rejection,ordinary_rejection
+        assert not marker.exists() and not (ordinary/'must-not-create.txt').exists()
 
         glob=text(call('ctx_glob',{'pattern':'marker-b.txt','path':str(extra.resolve())}))
         assert 'marker-b.txt' in glob,glob

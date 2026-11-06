@@ -182,6 +182,11 @@ fn queued_writer_observes_new_rules_and_cannot_use_a_legacy_global_target() {
     let lock = open_append(&target.path.with_extension("lock")).unwrap();
     lock.lock_exclusive().unwrap();
     let output_path = target.path.clone();
+    // Change the policy before starting the blocked writer: under coverage
+    // instrumentation, writing the fixture policy after worker wakeup can
+    // exhaust the production writer's 50-ms lock budget before unlock.
+    // The previously acquired Target must still re-resolve rules under lock.
+    policy(root.path(), MASK);
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         tx.send(()).unwrap();
@@ -200,7 +205,6 @@ fn queued_writer_observes_new_rules_and_cannot_use_a_legacy_global_target() {
         });
     });
     rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    policy(root.path(), MASK);
     FileExt::unlock(&lock).unwrap();
     worker.join().unwrap();
     let result = std::fs::read_to_string(output_path).unwrap();

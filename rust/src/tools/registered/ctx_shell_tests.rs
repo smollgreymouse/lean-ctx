@@ -1,13 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::{
-    CtxShellTool, collect_extra_env, detect_heredoc_reroute, format_background_state,
-    is_timeout_notice_only, resolve_effective_cwd, shell_access_denial, should_auto_background,
+    CtxShellTool, blocked_cwd_output, collect_extra_env, detect_heredoc_reroute,
+    format_background_state, is_timeout_notice_only, resolve_effective_cwd, shell_access_denial,
+    should_auto_background,
 };
 use crate::server::background_shell::JobState;
 use crate::server::tool_trait::{
     BackgroundJobState, BackgroundShellOutcome, McpTool, ShellOutcome, ToolContext,
 };
 use serde_json::{Map, Value};
+
+#[test]
+fn forbidden_shell_cwd_is_blocked_with_recovery_only_for_checkout() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let checkout = temporary.path().join("linked-worktree");
+    std::fs::create_dir(&checkout).expect("checkout");
+    std::fs::write(checkout.join(".git"), "gitdir: /tmp/test-only\n")
+        .expect("linked-worktree marker");
+    let rejected = blocked_cwd_output(checkout.to_str(), "path escapes project root");
+    assert_eq!(rejected.shell_outcome, Some(ShellOutcome::Blocked));
+    assert!(rejected.text.contains("CWD_OUTSIDE_WORKSPACE"));
+    assert!(rejected.text.contains("Command NOT executed"));
+    assert!(rejected.text.contains("harr-workspace::workspace_sync"));
+    assert!(rejected.text.contains(checkout.to_str().unwrap()));
+
+    let ordinary = temporary.path().join("not-a-checkout");
+    std::fs::create_dir(&ordinary).expect("ordinary directory");
+    let denied = blocked_cwd_output(ordinary.to_str(), "outside root");
+    assert_eq!(denied.shell_outcome, Some(ShellOutcome::Blocked));
+    assert!(!denied.text.contains("harr-workspace::workspace_sync"));
+}
 
 fn env_args(pairs: &[(&str, &str)]) -> Map<String, Value> {
     let mut env = Map::new();

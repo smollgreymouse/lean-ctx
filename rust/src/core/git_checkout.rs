@@ -286,11 +286,32 @@ fn opaque_key(parts: &[&Path]) -> String {
 /// but Git may reuse that path after a remove/re-add. File identity distinguishes
 /// those generations without writing marker files into Git's private metadata.
 fn checkout_generation(path: &Path) -> Option<String> {
+    // `commondir` is immutable for the lifetime of a linked-worktree admin
+    // slot. Git edits its parent directory, HEAD and gitdir during ordinary
+    // switch/move operations, so their change times are NOT generations.
+    // `description` is created once for the main repository's admin directory.
+    // A freshly created checkout gets a newly created marker even if the
+    // filesystem recycles the directory inode immediately after deletion.
+    let marker = if path.join("commondir").is_file() {
+        path.join("commondir")
+    } else if path.join("description").is_file() {
+        path.join("description")
+    } else {
+        path.to_path_buf()
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::metadata(path).ok()?;
-        return Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()));
+        let metadata = std::fs::metadata(&marker).ok()?;
+        // Include nanosecond ctime for the stable marker to avoid immediate
+        // inode-reuse collisions without changing generation on HEAD updates.
+        Some(format!(
+            "unix:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        ))
     }
     #[cfg(windows)]
     {
@@ -301,7 +322,7 @@ fn checkout_generation(path: &Path) -> Option<String> {
             FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
         };
 
-        let wide = path
+        let wide = marker
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
@@ -343,7 +364,7 @@ fn checkout_generation(path: &Path) -> Option<String> {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = path;
+        let _ = marker;
         None
     }
 }
@@ -558,6 +579,24 @@ fn parse_worktree_record(
         .ok_or_else(|| GitCheckoutError::InvalidMetadata("worktree record has no root".into()))?;
     let exists = root.is_dir();
     let canonical_root = exists.then(|| crate::core::pathutil::safe_canonicalize_or_self(&root));
+    // A deleted worktree has no leaf to canonicalize. On Windows the Git
+    // metadata path may use an 8.3 ancestor alias (RUNNER~1), while the
+    // registered root was discovered with its long name. Normalize only the
+    // existing parent for stale *metadata*; this never makes a missing root
+    // active or creates path-based Workspace authority.
+    #[cfg(windows)]
+    let root = if !exists {
+        root.parent()
+            .zip(root.file_name())
+            .and_then(|(parent, name)| {
+                crate::core::pathutil::canonicalize_raw(parent)
+                    .ok()
+                    .map(|canonical| canonical.join(name))
+            })
+            .unwrap_or(root)
+    } else {
+        root
+    };
     let git_dir = if let Some(ref canonical_root) = canonical_root {
         match discover_checkout(canonical_root).ok().flatten() {
             Some(identity)
@@ -662,7 +701,9 @@ mod tests {
     impl RepoFixture {
         fn new() -> Self {
             let tmp = tempfile::tempdir().expect("tempdir");
-            let main = tmp.path().join("main");
+            let main = crate::core::pathutil::canonicalize_raw(tmp.path())
+                .expect("canonical fixture parent")
+                .join("main");
             git(tmp.path(), &["init", main.to_str().unwrap()]);
             git(&main, &["config", "user.email", "test@example.invalid"]);
             git(&main, &["config", "user.name", "LeanCTX Test"]);
@@ -675,7 +716,9 @@ mod tests {
         }
 
         fn worktree(&self, name: &str, branch: &str) -> PathBuf {
-            let path = self.tmp.path().join(name);
+            let path = crate::core::pathutil::canonicalize_raw(self.tmp.path())
+                .expect("canonical fixture parent")
+                .join(name);
             git(
                 &self.main,
                 &["worktree", "add", path.to_str().unwrap(), branch],
@@ -762,7 +805,10 @@ mod tests {
             .unwrap()
             .expect("stable worktree admin slot should resolve the moved checkout");
         assert_eq!(rebound.checkout_key, before.checkout_key);
-        assert_eq!(rebound.root, moved.canonicalize().unwrap());
+        assert_eq!(
+            rebound.root,
+            crate::core::pathutil::canonicalize_raw(&moved).unwrap()
+        );
     }
 
     #[test]

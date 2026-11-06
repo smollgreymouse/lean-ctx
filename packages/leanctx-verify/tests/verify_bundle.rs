@@ -249,7 +249,7 @@ fn truncated_chain_is_detected() {
             let mut entry = archive.by_index(i).unwrap();
             let mut buf = Vec::new();
             std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
-            let name = entry.name().to_string();
+            let name = entry.name().expect("valid ZIP entry name").into_owned();
             if name == "audit/trail.jsonl" {
                 let text = String::from_utf8(buf).unwrap();
                 let mut lines: Vec<&str> = text.lines().collect();

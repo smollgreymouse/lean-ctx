@@ -130,9 +130,10 @@ fn all_static_locks_documented() {
     let mut undocumented = Vec::new();
     for (name, location) in &locks {
         let name_clean = name.trim();
-        let is_documented = doc_referenced
-            .iter()
-            .any(|entry| entry.contains(name_clean) || doc.contains(&location.replace("src/", "")));
+        let is_documented = doc_referenced.iter().any(|entry| {
+            entry.contains(name_clean)
+                || doc.contains(&location.replace('\\', "/").replace("src/", ""))
+        });
         if !is_documented {
             undocumented.push(format!("  {name_clean} at {location}"));
         }

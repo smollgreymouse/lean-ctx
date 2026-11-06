@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Black-box regression: ctx_tools discovery owns its downstream timeout.
 
 The generic tool watchdog must never cancel ctx_tools while a healthy downstream

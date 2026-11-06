@@ -113,6 +113,7 @@ pub(crate) fn clear() {
 
 /// Cross-process debug barrier for admin CLI crash/race tests. The controller
 /// chooses exactly one stage and releases it by creating `<stage>.release`.
+#[cfg(unix)]
 pub(crate) fn external_hit(stage: &'static str) {
     let Ok(selected) = std::env::var("LEAN_CTX_TEST_HOOK_STAGE") else {
         return;

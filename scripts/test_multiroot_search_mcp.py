@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Standalone real-MCP PathJail/search authority regression, Linux bubblewrap only.
 
 Run with LEANCTX_TEST_BIN=/absolute/path/to/real/lean-ctx and one of

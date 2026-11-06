@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """End-to-end regression for strict Workspace + Git worktree lifecycle."""
 
 from __future__ import annotations

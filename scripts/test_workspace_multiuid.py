@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 import json, os, pathlib, shutil, subprocess, tempfile, time, select
 binary=os.environ['LEANCTX_TEST_BIN']
 docker=shutil.which('docker')

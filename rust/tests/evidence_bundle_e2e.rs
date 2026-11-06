@@ -58,7 +58,14 @@ fn bundle_is_deterministic_and_complete() {
     let mut archive =
         zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out_a).expect("a"))).expect("zip");
     let names: Vec<String> = (0..archive.len())
-        .map(|i| archive.by_index(i).expect("entry").name().to_string())
+        .map(|i| {
+            archive
+                .by_index(i)
+                .expect("entry")
+                .name()
+                .expect("valid ZIP entry name")
+                .into_owned()
+        })
         .collect();
     assert!(names.contains(&"manifest.json".to_string()));
     assert!(names.contains(&"audit/trail.jsonl".to_string()));
