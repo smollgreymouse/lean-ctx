@@ -54,7 +54,7 @@ struct StoredWorkspaceMetadata {
 /// Crash-consistent sidecar envelope. During a Workspace mutation the sidecar
 /// temporarily carries both the currently committed metadata and the next
 /// revision. Therefore either side of the legacy JSON atomic rename has an
-/// exact identity fence available. Old single-record sidecars are still read.
+/// exact identity fence available.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredWorkspaceMetadataJournal {
@@ -62,7 +62,7 @@ struct StoredWorkspaceMetadataJournal {
     versions: Vec<StoredWorkspaceMetadata>,
 }
 
-const WORKSPACE_METADATA_SCHEMA_VERSION: u32 = 1;
+const WORKSPACE_METADATA_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct WorkspaceAdminView {
@@ -376,21 +376,36 @@ fn read_unlocked(path: &Path) -> Result<StoredWorkspace, String> {
 }
 
 fn decode_metadata_records(data: &str) -> Result<Vec<StoredWorkspaceMetadata>, String> {
-    if let Ok(journal) = serde_json::from_str::<StoredWorkspaceMetadataJournal>(data) {
-        if journal.schema_version != WORKSPACE_METADATA_SCHEMA_VERSION {
-            return Err(format!(
-                "unsupported Workspace metadata schema {}",
-                journal.schema_version
-            ));
-        }
-        if journal.versions.is_empty() || journal.versions.len() > 2 {
-            return Err("Workspace metadata journal must contain one or two revisions".into());
-        }
-        return Ok(journal.versions);
+    let journal: StoredWorkspaceMetadataJournal = serde_json::from_str(data)
+        .map_err(|e| format!("invalid Workspace metadata journal: {e}"))?;
+    if journal.schema_version != WORKSPACE_METADATA_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported Workspace metadata schema {}",
+            journal.schema_version
+        ));
     }
-    serde_json::from_str::<StoredWorkspaceMetadata>(data)
-        .map(|metadata| vec![metadata])
-        .map_err(|e| format!("invalid Workspace metadata: {e}"))
+    if journal.versions.is_empty() || journal.versions.len() > 2 {
+        return Err("Workspace metadata journal must contain one or two revisions".into());
+    }
+    Ok(journal.versions)
+}
+
+fn decode_metadata_records_for_reconcile(
+    data: &str,
+) -> Result<Option<Vec<StoredWorkspaceMetadata>>, String> {
+    let journal: StoredWorkspaceMetadataJournal = serde_json::from_str(data)
+        .map_err(|e| format!("invalid Workspace metadata journal: {e}"))?;
+    match journal.schema_version {
+        WORKSPACE_METADATA_SCHEMA_VERSION => {}
+        1 => return Ok(None),
+        version => {
+            return Err(format!("unsupported Workspace metadata schema {version}"));
+        }
+    }
+    if journal.versions.is_empty() || journal.versions.len() > 2 {
+        return Err("Workspace metadata journal must contain one or two revisions".into());
+    }
+    Ok(Some(journal.versions))
 }
 
 fn select_metadata_for_value(
@@ -425,6 +440,21 @@ fn read_metadata_raw_unlocked(
 }
 
 #[cfg(unix)]
+fn read_metadata_raw_unlocked_for_reconcile(
+    anchor: &StoreAnchor,
+) -> Result<Option<Vec<StoredWorkspaceMetadata>>, String> {
+    let name = anchor.metadata_name();
+    let Some(file) = anchor.open_optional_named(&name, libc::O_RDONLY)? else {
+        return Ok(None);
+    };
+    let mut data = String::new();
+    (&file)
+        .read_to_string(&mut data)
+        .map_err(|e| e.to_string())?;
+    decode_metadata_records_for_reconcile(&data)
+}
+
+#[cfg(unix)]
 fn read_metadata_unlocked(
     anchor: &StoreAnchor,
     value: &StoredWorkspace,
@@ -448,6 +478,24 @@ fn read_metadata_raw_unlocked(path: &Path) -> Result<Option<Vec<StoredWorkspaceM
         .read_to_string(&mut data)
         .map_err(|e| e.to_string())?;
     decode_metadata_records(&data).map(Some)
+}
+
+#[cfg(not(unix))]
+fn read_metadata_raw_unlocked_for_reconcile(
+    path: &Path,
+) -> Result<Option<Vec<StoredWorkspaceMetadata>>, String> {
+    let path = metadata_path(path);
+    let file = match private_options().open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    verify_private_file(&file)?;
+    let mut data = String::new();
+    (&file)
+        .read_to_string(&mut data)
+        .map_err(|e| e.to_string())?;
+    decode_metadata_records_for_reconcile(&data)
 }
 
 #[cfg(not(unix))]
@@ -1246,7 +1294,7 @@ pub(crate) fn reconcile_metadata(path: &Path) -> Result<(), String> {
         let lock = anchor.open_lock()?;
         FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
         let value = read_unlocked(&anchor)?;
-        let existing = read_metadata_raw_unlocked(&anchor)?.and_then(|records| {
+        let existing = read_metadata_raw_unlocked_for_reconcile(&anchor)?.and_then(|records| {
             records.into_iter().find(|metadata| {
                 metadata.workspace_id == value.id && metadata.revision == value.revision
             })
@@ -1267,7 +1315,7 @@ pub(crate) fn reconcile_metadata(path: &Path) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
         let value = read_unlocked(path)?;
-        let existing = read_metadata_raw_unlocked(path)?.and_then(|records| {
+        let existing = read_metadata_raw_unlocked_for_reconcile(path)?.and_then(|records| {
             records.into_iter().find(|metadata| {
                 metadata.workspace_id == value.id && metadata.revision == value.revision
             })

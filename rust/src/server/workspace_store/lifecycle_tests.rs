@@ -141,6 +141,110 @@ fn stale_sidecar_from_legacy_writer_fails_closed_until_reconciled() {
 }
 
 #[test]
+fn unsupported_metadata_schema_fails_closed_until_reconciled() {
+    let fixture = RepoFixture::new();
+    let store = fixture.store("workspace.json");
+    initialized_store(&store, fixture.main.to_str().unwrap()).unwrap();
+
+    let meta = metadata_path(&store);
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&meta).unwrap()).unwrap();
+    raw["schema_version"] = serde_json::json!(1);
+    raw["versions"][0]["checkout_bindings"][fixture.main.to_str().unwrap()]["checkout_generation"] =
+        serde_json::json!("unix:1:2");
+    fs::write(&meta, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+    let error = load_resolved(&store).expect_err("old metadata schema must fail closed");
+    assert!(
+        error.contains("unsupported Workspace metadata schema 1"),
+        "{error}"
+    );
+
+    reconcile_metadata(&store).unwrap();
+
+    let migrated_raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&meta).unwrap()).unwrap();
+    assert_eq!(
+        migrated_raw["schema_version"],
+        serde_json::json!(WORKSPACE_METADATA_SCHEMA_VERSION)
+    );
+
+    let migrated = load_resolved(&store).unwrap();
+    assert_eq!(migrated.primary.state, WorkspaceRootState::Active);
+    assert_eq!(
+        migrated
+            .checkout_bindings
+            .get(fixture.main.to_str().unwrap()),
+        binding_for_root(fixture.main.to_str().unwrap()).as_ref(),
+        "reconcile must rebuild old-schema bindings from the live registered checkout"
+    );
+}
+
+#[test]
+fn reconcile_refuses_unknown_future_metadata_schema() {
+    let fixture = RepoFixture::new();
+    let store = fixture.store("workspace.json");
+    initialized_store(&store, fixture.main.to_str().unwrap()).unwrap();
+
+    let meta = metadata_path(&store);
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&meta).unwrap()).unwrap();
+    raw["schema_version"] = serde_json::json!(WORKSPACE_METADATA_SCHEMA_VERSION + 1);
+    fs::write(&meta, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+    let error = reconcile_metadata(&store).expect_err("future schema must fail closed");
+    assert!(
+        error.contains("unsupported Workspace metadata schema 3"),
+        "{error}"
+    );
+}
+
+#[test]
+fn reconcile_does_not_hide_corrupt_metadata() {
+    let fixture = RepoFixture::new();
+    let store = fixture.store("workspace.json");
+    initialized_store(&store, fixture.main.to_str().unwrap()).unwrap();
+    fs::write(metadata_path(&store), b"{not-json").unwrap();
+
+    let error = reconcile_metadata(&store).expect_err("corrupt metadata must remain fatal");
+    assert!(
+        error.contains("invalid Workspace metadata journal"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn checkout_generation_uses_main_and_linked_stable_markers() {
+    use std::os::unix::fs::MetadataExt;
+
+    let fixture = RepoFixture::new();
+    let linked = fixture.linked("linked-generation");
+
+    for root in [&fixture.main, &linked] {
+        let binding = binding_for_root(root.to_str().unwrap()).expect("Git checkout binding");
+        let git_dir = Path::new(&binding.git_dir);
+        let marker = if git_dir.join("commondir").is_file() {
+            git_dir.join("commondir")
+        } else {
+            git_dir.join("description")
+        };
+        let metadata = fs::metadata(&marker).unwrap();
+        let expected = format!(
+            "unix:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        );
+        assert_eq!(
+            binding.checkout_generation.as_deref(),
+            Some(expected.as_str())
+        );
+    }
+}
+
+#[test]
 fn legacy_store_without_sidecar_can_be_identity_migrated_in_place() {
     let fixture = RepoFixture::new();
     let store = fixture.store("workspace.json");
