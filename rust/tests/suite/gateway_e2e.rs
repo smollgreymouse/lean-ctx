@@ -18,8 +18,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ProgressNotificationParam, ServerCapabilities, ServerConfig,
-    ServerInfo, Tool,
+    PaginatedRequestParams, ProgressNotificationParam, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -87,7 +86,7 @@ impl ServerHandler for EchoServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> {
+    ) -> Result<CallToolResponse, ErrorData> {
         let args = request.arguments.unwrap_or_default();
         match request.name.as_ref() {
             "echo" => {

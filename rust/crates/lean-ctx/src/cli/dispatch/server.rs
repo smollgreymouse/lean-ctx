@@ -270,7 +270,7 @@ fn shutdown_runtime_bounded(rt: tokio::runtime::Runtime) {
     // Release pooled downstream sessions first: dropping each one cancels its
     // transport and closes the child's stdin, so pooled MCP servers shut down
     // cleanly instead of being killed with the process.
-    crate::core::mcp_catalog::pool::clear();
+    core::mcp_catalog::pool::clear();
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
 }
 
@@ -462,7 +462,7 @@ fn spawn_parent_watchdog() {
                     // process::exit skips destructors, so release the pooled
                     // downstream children explicitly: dropping each session
                     // cancels its transport and closes the child's stdin.
-                    crate::core::mcp_catalog::pool::clear();
+                    core::mcp_catalog::pool::clear();
                     std::process::exit(0);
                 }
             })

@@ -43,7 +43,7 @@ async fn wait_port_released(port: u16) -> bool {
 
 fn spawn_proxy(port: u16, token: String) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let _ = lean_ctx::proxy::start_proxy_with_token(port, Some(token)).await;
+        let _ = lean_ctx_proxy::start_proxy_with_token(port, Some(token)).await;
     })
 }
 
