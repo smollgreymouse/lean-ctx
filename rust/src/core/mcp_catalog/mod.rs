@@ -28,6 +28,7 @@ pub mod router;
 pub use catalog::Catalog;
 pub use config::{
     GatewayConfig, GatewayServer, ResolvedTransport, SecretMementoRef, TransportKind,
+    server_allowed_in_scope,
 };
 pub use memento::SecretMementoStore;
 pub use router::ScoredTool;
@@ -207,6 +208,7 @@ mod tests {
                     namespaced: "git::commit".into(),
                     description: "Create a git commit with a message".into(),
                     params: "message*, all".into(),
+                    workspace_required: true,
                 },
                 score: 3.2,
             }],

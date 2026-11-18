@@ -107,6 +107,7 @@ mod tests {
             namespaced: format!("{server}::{tool}"),
             description: desc.into(),
             params: String::new(),
+            workspace_required: true,
         }
     }
 

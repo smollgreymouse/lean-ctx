@@ -91,6 +91,11 @@ impl LeanCtxServer {
     /// executing a tool. Construction registers eagerly; this is the
     /// fail-closed retry for a transient startup lock or registry failure.
     pub(crate) async fn ensure_session_presence(&self) -> Result<(), String> {
+        // Rootless servers have no trusted root to advertise; presence stays
+        // unregistered instead of fabricating ".".
+        if self.authority_mode.is_rootless() {
+            return Ok(());
+        }
         if self.presence_agent_id.read().await.is_some() {
             return Ok(());
         }
@@ -144,7 +149,19 @@ impl LeanCtxServer {
         // Purge stale graph indices on startup to prevent serving outdated data
         crate::core::graph_index::ProjectIndex::purge_stale_indices();
 
-        let mut startup = detect_startup_context(project_root, startup_cwd);
+        // The MCP entry point (`run_mcp_server`) already rejects an invalid or
+        // inconsistent launcher mode before construction; every other
+        // construction path (CLI one-shot, daemon) never sets it, so a stray
+        // value degrades to the legacy direct-client mode instead of crashing.
+        let authority_mode = match crate::core::authority_mode::AuthorityMode::parse_env() {
+            Ok(mode) => mode,
+            Err(error) => {
+                tracing::warn!("lean-ctx: ignoring invalid authority mode: {error}");
+                crate::core::authority_mode::AuthorityMode::Legacy
+            }
+        };
+
+        let mut startup = detect_startup_context(project_root, startup_cwd, authority_mode);
         // Launchd daemons commonly start in `/`. A broad root must never become
         // session state: it creates a cross-project mega-session and, before
         // the bounded project index, also made every later MCP launch scan it.
@@ -226,19 +243,25 @@ impl LeanCtxServer {
         ));
         warm_cache_in_background(cache.clone(), startup.project_root.clone());
 
-        let presence_root = startup
-            .project_root
-            .as_deref()
-            .or(startup.shell_cwd.as_deref())
-            .unwrap_or(".");
-        let presence_agent_id =
+        // Rootless presence: there is no trusted root to register, and faking
+        // "." (or the process CWD) would advertise authority the server does
+        // not have. Skip registration; the rootless surface stays honest.
+        let presence_agent_id = if authority_mode.is_rootless() {
+            None
+        } else {
+            let presence_root = startup
+                .project_root
+                .as_deref()
+                .or(startup.shell_cwd.as_deref())
+                .unwrap_or(".");
             match crate::core::agents::AgentRegistry::register_mcp_process(presence_root, None) {
                 Ok(agent_id) => Some(agent_id),
                 Err(error) => {
                     tracing::warn!("lean-ctx: failed to register MCP agent presence: {error}");
                     None
                 }
-            };
+            }
+        };
 
         Self {
             cache,
@@ -246,6 +269,7 @@ impl LeanCtxServer {
             workspace_registry: crate::server::workspace_registry::new_registry(),
             workspace_store_path: std::env::var_os("LEAN_CTX_WORKSPACE_FILE")
                 .map(std::path::PathBuf::from),
+            authority_mode,
             tool_calls: Arc::new(RwLock::new(Vec::new())),
             call_count: Arc::new(AtomicUsize::new(0)),
             background_tick: Arc::new(AtomicUsize::new(0)),

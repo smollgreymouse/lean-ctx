@@ -242,7 +242,7 @@ impl LeanCtxServer {
         };
 
         match peer
-            .create_elicitation_with_timeout(request, Some(Duration::from_secs(300)))
+            .create_elicitation_with_timeout(request, Some(Duration::from_mins(5)))
             .await
         {
             Ok(response) => matches!(response.action, ElicitationAction::Accept),

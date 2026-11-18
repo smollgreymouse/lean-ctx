@@ -86,6 +86,10 @@ pub(crate) enum WorkspaceRootState {
     Unavailable,
     Unsafe,
     IdentityMismatch,
+    /// Kept for wire compatibility: pre-multi-worktree runs marked legacy
+    /// sibling worktrees in this state. Normal resolution no longer assigns
+    /// it — a registered worktree holds authority on its own binding.
+    #[allow(dead_code)]
     SiblingWorktree,
 }
 
@@ -783,76 +787,20 @@ fn authority_fingerprint(
     hasher.finalize().to_hex().to_string()
 }
 
-fn suppress_sibling_worktree_authority(
-    primary: &WorkspaceRootStatus,
-    additional: &mut [WorkspaceRootStatus],
-) {
-    let primary_checkout = primary.active.as_deref().and_then(|root| {
-        crate::core::git_checkout::discover_checkout(root)
-            .ok()
-            .flatten()
-    });
-
-    if let Some(primary_checkout) = primary_checkout.as_ref() {
-        for status in additional.iter_mut() {
-            let Some(root) = status.active.as_deref() else {
-                continue;
-            };
-            let Ok(Some(checkout)) = crate::core::git_checkout::discover_checkout(root) else {
-                continue;
-            };
-            if crate::core::git_checkout::same_repository(primary_checkout, &checkout)
-                && primary_checkout.checkout_key != checkout.checkout_key
-            {
-                status.active = None;
-                status.state = WorkspaceRootState::SiblingWorktree;
-            }
-        }
-    }
-
-    let mut by_repository: std::collections::BTreeMap<
-        String,
-        Vec<(usize, String, Option<String>)>,
-    > = std::collections::BTreeMap::new();
-    for (index, status) in additional.iter().enumerate() {
-        let Some(root) = status.active.as_deref() else {
-            continue;
-        };
-        let Ok(Some(checkout)) = crate::core::git_checkout::discover_checkout(root) else {
-            continue;
-        };
-        by_repository
-            .entry(checkout.repository.repository_key)
-            .or_default()
-            .push((index, checkout.checkout_key, checkout.checkout_generation));
-    }
-
-    for entries in by_repository.values() {
-        let distinct: std::collections::BTreeSet<_> = entries
-            .iter()
-            .map(|(_, key, generation)| (key.clone(), generation.clone()))
-            .collect();
-        if distinct.len() <= 1 {
-            continue;
-        }
-        for (index, _, _) in entries {
-            additional[*index].active = None;
-            additional[*index].state = WorkspaceRootState::SiblingWorktree;
-        }
-    }
-}
-
 fn resolve_with_bindings(
     value: StoredWorkspace,
     checkout_bindings: std::collections::BTreeMap<String, StoredCheckoutBinding>,
 ) -> ResolvedWorkspace {
     let primary = resolve_root(&value.primary, checkout_bindings.get(&value.primary));
-    let mut additional: Vec<_> = value
+    // Each registered root is resolved strictly on its own binding: shared
+    // repository identity never suppresses or grants authority between
+    // checkouts, and multiple linked worktrees of one repository may each hold
+    // independent authority once explicitly registered.
+    let additional: Vec<_> = value
         .additional
         .iter()
         .map(|root| resolve_root(root, checkout_bindings.get(root)))
         .collect();
-    suppress_sibling_worktree_authority(&primary, &mut additional);
     let authority_fingerprint = authority_fingerprint(&value, &primary, &additional);
     ResolvedWorkspace {
         configured: value,
@@ -1101,49 +1049,6 @@ pub(crate) fn load(path: &Path) -> Result<StoredWorkspace, String> {
     }
 }
 
-fn reject_same_repository_worktree(
-    value: &StoredWorkspace,
-    bindings: &std::collections::BTreeMap<String, StoredCheckoutBinding>,
-    candidate: &crate::core::git_checkout::CheckoutIdentity,
-) -> Result<(), String> {
-    for configured in std::iter::once(&value.primary).chain(value.additional.iter()) {
-        if let Some(binding) = bindings.get(configured) {
-            if binding.repository_key == candidate.repository.repository_key
-                && !checkout_matches_binding(candidate, binding)
-            {
-                return Err(format!(
-                    "Workspace root is a sibling worktree (another worktree generation/checkout of the same local Git repository) of configured root {configured}; worktree topology does not grant independent Workspace authority"
-                ));
-            }
-            continue;
-        }
-
-        let existing = match crate::core::git_checkout::discover_checkout(Path::new(configured)) {
-            Ok(existing) => existing,
-            Err(crate::core::git_checkout::GitCheckoutError::ProbePathMissing(_)) => {
-                // A legacy configured root may have disappeared before checkout identity
-                // metadata existed. It is inactive authority, so it cannot prove a
-                // same-repository conflict and must not block unrelated additions.
-                continue;
-            }
-            Err(error) => {
-                return Err(format!(
-                    "cannot inspect configured Git checkout {configured}: {error}"
-                ));
-            }
-        };
-        if let Some(existing) = existing
-            && crate::core::git_checkout::same_repository(&existing, candidate)
-            && existing.checkout_key != candidate.checkout_key
-        {
-            return Err(format!(
-                "Workspace root is a sibling worktree of configured root {configured}; worktree topology does not grant independent Workspace authority"
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn configured_additional_for_checkout(
     value: &StoredWorkspace,
     bindings: &std::collections::BTreeMap<String, StoredCheckoutBinding>,
@@ -1215,6 +1120,10 @@ fn apply_mutation(
         if let Some(candidate) = crate::core::git_checkout::discover_checkout(Path::new(root))
             .map_err(|error| format!("cannot inspect candidate Git checkout: {error}"))?
         {
+            // A moved checkout rebinds to its new path instead of duplicating
+            // authority. Multiple distinct worktrees of one repository are
+            // allowed: each registration carries its own checkout identity,
+            // and per-binding checks below keep every root independent.
             if let Some(configured) =
                 configured_additional_for_checkout(value, bindings, &candidate)
                 && configured != root
@@ -1222,7 +1131,6 @@ fn apply_mutation(
                 value.additional.retain(|entry| entry != &configured);
                 bindings.remove(&configured);
             }
-            reject_same_repository_worktree(value, bindings, &candidate)?;
         }
 
         if !value.additional.iter().any(|entry| entry == root) {

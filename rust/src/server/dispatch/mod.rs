@@ -248,6 +248,7 @@ impl LeanCtxServer {
             let extra_roots = self.session.read().await.extra_roots.clone();
             let ctx = crate::server::tool_trait::ToolContext {
                 project_root,
+                authority_mode: self.authority_mode,
                 extra_roots,
                 minimal,
                 resolved_paths,
@@ -899,11 +900,11 @@ mod tests {
     async fn handler_panic_becomes_error_not_crash() {
         let join: tokio::task::JoinHandle<Result<ToolOutput, ErrorData>> =
             tokio::task::spawn_blocking(|| panic!("simulated handler panic"));
-        let error =
-            match LeanCtxServer::watchdog_join("mock", join, Some(Duration::from_secs(5))).await {
-                Ok(_) => panic!("panic must become an MCP error"),
-                Err(error) => error,
-            };
+        let Err(error) =
+            LeanCtxServer::watchdog_join("mock", join, Some(Duration::from_secs(5))).await
+        else {
+            panic!("panic must become an MCP error")
+        };
         assert!(
             error.message.contains("handler panicked"),
             "panic and cancellation must remain diagnostically distinct: {}",
@@ -918,9 +919,8 @@ mod tests {
             Ok(ToolOutput::simple("unreachable".to_string()))
         });
         join.abort();
-        let error = match LeanCtxServer::unwrap_join("mock", join.await) {
-            Ok(_) => panic!("cancelled handler must become an MCP error"),
-            Err(error) => error,
+        let Err(error) = LeanCtxServer::unwrap_join("mock", join.await) else {
+            panic!("cancelled handler must become an MCP error")
         };
         assert!(
             error.message.contains("cancelled before completion"),

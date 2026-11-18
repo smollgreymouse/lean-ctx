@@ -66,7 +66,12 @@ impl McpTool for CtxToolsTool {
             ) as crate::core::mcp_catalog::client::ProgressCallback
         });
 
-        let result = crate::tools::ctx_tools::run_with_progress(args, &ctx.project_root, progress);
+        let result = crate::tools::ctx_tools::run_with_progress(
+            args,
+            &ctx.project_root,
+            ctx.authority_mode,
+            progress,
+        );
 
         // ProgressSender drains on the async server runtime while this handler
         // runs in spawn_blocking. Flush before returning so the terminal

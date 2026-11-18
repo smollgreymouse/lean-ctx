@@ -40,6 +40,25 @@ pub fn run() {
         args.remove(1);
     }
 
+    // Harr probes the paired runtime before it acquires Workspace locks or
+    // creates a Workspace store. Keep this branch ahead of every dispatcher
+    // that may initialize config, telemetry, logging, or runtime state.
+    if args.get(1).map(String::as_str) == Some("harr-capabilities") {
+        if args.len() != 3 || args.get(2).map(String::as_str) != Some("--json") {
+            eprintln!("usage: lean-ctx harr-capabilities --json");
+            std::process::exit(2);
+        }
+        // Capabilities are advertised only once their runtime behavior is
+        // implemented and checked: authority-mode (explicit/immutable mode
+        // handling in run_mcp_server + server state), no-workspace (rootless
+        // tool/resource/path guards) and workspace-sibling-checkouts (multiple
+        // registered worktrees of one repository with independent authority).
+        println!(
+            "{{\"schema_version\":1,\"runtime\":\"lean-ctx\",\"capabilities\":[\"authority-mode-v1\",\"no-workspace-v1\",\"workspace-sibling-checkouts-v1\"]}}"
+        );
+        std::process::exit(0);
+    }
+
     match crate::cli::codex_protected_cmd::protected_gitlab_dispatch(&args) {
         Ok(Some(code)) => std::process::exit(code),
         Ok(None) => {}

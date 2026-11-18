@@ -17,6 +17,7 @@ fn ctx_for(root: &std::path::Path, file: &str) -> ToolContext {
     resolved_paths.insert("path".to_string(), file.to_string());
     ToolContext {
         project_root: root.to_string_lossy().to_string(),
+        authority_mode: lean_ctx::core::authority_mode::AuthorityMode::Legacy,
         extra_roots: Vec::new(),
         minimal: false,
         resolved_paths,

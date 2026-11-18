@@ -23,6 +23,10 @@ pub struct CatalogEntry {
     pub description: String,
     /// Compact `param, required*` summary for ChoiceCards.
     pub params: String,
+    /// Trusted-scope policy projected from the owning server's global config
+    /// ([`GatewayServer::workspace_required`]). This is a projection of the
+    /// trusted server configuration, not an independent authority source.
+    pub workspace_required: bool,
 }
 
 /// The aggregated catalog plus any per-server fetch errors.
@@ -121,6 +125,7 @@ pub async fn build(cfg: &GatewayConfig) -> Catalog {
                         description: t.description.as_deref().unwrap_or("").trim().to_string(),
                         params: summarize_schema(t.input_schema.as_ref()),
                         tool,
+                        workspace_required: server.workspace_required,
                     });
                 }
             }
@@ -202,6 +207,7 @@ mod tests {
                     namespaced: "fs::read".into(),
                     description: "Read a file".into(),
                     params: "path*".into(),
+                    workspace_required: true,
                 },
                 CatalogEntry {
                     server: "git".into(),
@@ -209,6 +215,7 @@ mod tests {
                     namespaced: "git::log".into(),
                     description: "Show log".into(),
                     params: String::new(),
+                    workspace_required: false,
                 },
             ],
             errors: vec![],

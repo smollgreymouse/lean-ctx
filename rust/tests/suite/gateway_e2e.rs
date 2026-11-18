@@ -217,24 +217,27 @@ async fn gateway_client_forwards_request_scoped_progress() {
     .expect("call progress");
 
     assert_eq!(client::result_to_text(&result).trim(), "done");
-    let updates = seen.lock().expect("progress collection lock");
-    assert_eq!(
-        updates.len(),
-        3,
-        "expected every downstream progress update"
-    );
-    assert_eq!(
-        updates.iter().map(|item| item.progress).collect::<Vec<_>>(),
-        vec![1.0, 2.0, 3.0]
-    );
-    assert_eq!(
-        updates
-            .iter()
-            .map(|item| item.message.as_deref())
-            .collect::<Vec<_>>(),
-        vec![Some("step 1"), Some("step 2"), Some("step 3")]
-    );
-    assert!(updates.iter().all(|item| item.total == Some(3.0)));
+    // Scope the guard so it never spans the `service.cancel().await` below.
+    {
+        let updates = seen.lock().expect("progress collection lock");
+        assert_eq!(
+            updates.len(),
+            3,
+            "expected every downstream progress update"
+        );
+        assert_eq!(
+            updates.iter().map(|item| item.progress).collect::<Vec<_>>(),
+            vec![1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            updates
+                .iter()
+                .map(|item| item.message.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("step 1"), Some("step 2"), Some("step 3")]
+        );
+        assert!(updates.iter().all(|item| item.total == Some(3.0)));
+    }
 
     let _ = service.cancel().await;
 }

@@ -169,6 +169,15 @@ fn strict_workspace_tool_allowed(name: &str) -> bool {
     )
 }
 
+/// Rootless (`LEAN_CTX_AUTHORITY_MODE=none`) tool surface: exactly the gateway
+/// meta-tool plus the read-only Workspace diagnostic. Everything else —
+/// including `ctx_call`, shell and file tools — is denied. `list_tools` and
+/// `call_tool` share this single policy, so a stale `tools/list` snapshot
+/// cannot invoke a tool the current mode hides.
+pub(crate) fn no_workspace_tool_allowed(name: &str) -> bool {
+    matches!(name, "ctx_tools" | "ctx_workspace_get")
+}
+
 impl ServerHandler for LeanCtxServer {
     fn get_info(&self) -> ServerInfo {
         let capabilities = server_capabilities(true, true);
@@ -202,13 +211,40 @@ impl ServerHandler for LeanCtxServer {
         }
 
         let has_roots = request.capabilities.roots.is_some();
-        self.has_client_roots
-            .store(has_roots, std::sync::atomic::Ordering::Relaxed);
-        if has_roots {
+        // Rootless mode ignores client roots entirely: they are client claims,
+        // never authority, and must not seed or widen the session.
+        self.has_client_roots.store(
+            has_roots && !self.authority_mode.is_rootless(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if has_roots && !self.authority_mode.is_rootless() {
             tracing::info!("Client supports MCP roots/list — will resolve on first tool call");
         }
 
-        let effective_root = if self.workspace_store_path.is_some()
+        if self.authority_mode.is_rootless() {
+            // Rootless initialize: the process CWD, initialize arguments and
+            // client roots carry no authority. Clear any state the fresh
+            // session could have inherited so the rootless surface starts
+            // empty; later roots notifications cannot change the mode (see
+            // `on_roots_list_changed` / `resolve_roots_once`).
+            let mut session = self.session.write().await;
+            session.project_root = None;
+            session.shell_cwd = None;
+            session.extra_roots.clear();
+            session.client_workspace_roots.clear();
+            session.refresh_handoff_context();
+            if let Err(e) = session.save() {
+                tracing::warn!("lean-ctx: failed to persist session state: {e}");
+            }
+            // No trusted root exists, so the agent-registration block below
+            // sees an empty `agent_root` and skips role/registration on its
+            // own; maintenance duties are authority-neutral and still run.
+        }
+
+        let effective_root = if self.authority_mode.is_rootless() {
+            // Never derive from CWD, initialize args or LEAN_CTX_* roots here.
+            None
+        } else if self.workspace_store_path.is_some()
             && std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1")
         {
             // A launcher-bound Workspace is the authority source. Do not let
@@ -221,13 +257,18 @@ impl ServerHandler for LeanCtxServer {
             env_root.or(derived_root)
         };
 
-        let cwd_str = std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let cwd_str = if self.authority_mode.is_rootless() {
+            String::new()
+        } else {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        };
         {
             let mut session = self.session.write().await;
-            let strict_workspace = self.workspace_store_path.is_some()
+            let strict_workspace = !self.authority_mode.is_rootless()
+                && self.workspace_store_path.is_some()
                 && std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
             if strict_workspace {
                 // Never seed ctx_shell from the MCP process CWD under strict
@@ -272,11 +313,20 @@ impl ServerHandler for LeanCtxServer {
             // PathJail accepts LEAN_CTX_EXTRA_ROOTS directly. Mirror only that
             // explicit multi-root authority into the session so search and
             // PathJail agree; LEAN_CTX_ALLOW_PATH must NOT grant search scope.
-            let mut cfg_extra = crate::core::config::Config::load().extra_roots;
-            if let Some(extra) = std::env::var_os("LEAN_CTX_EXTRA_ROOTS") {
-                cfg_extra.extend(
-                    std::env::split_paths(&extra).map(|path| path.to_string_lossy().into_owned()),
-                );
+            // Rootless ignores both sources: config/env extras never widen a
+            // server that has no workspace.
+            let mut cfg_extra = if self.authority_mode.is_rootless() {
+                Vec::new()
+            } else {
+                crate::core::config::Config::load().extra_roots
+            };
+            if !self.authority_mode.is_rootless() {
+                if let Some(extra) = std::env::var_os("LEAN_CTX_EXTRA_ROOTS") {
+                    cfg_extra.extend(
+                        std::env::split_paths(&extra)
+                            .map(|path| path.to_string_lossy().into_owned()),
+                    );
+                }
             }
             for path in cfg_extra {
                 if path.trim().is_empty() {
@@ -707,10 +757,36 @@ impl ServerHandler for LeanCtxServer {
                     .collect()
             } else { tools };
 
+            // Rootless surface: exactly `ctx_tools` + `ctx_workspace_get`,
+            // taken from the registry before profile/quirk filters can hide
+            // `ctx_tools`, and guarded by the shared `no_workspace_tool_allowed`
+            // policy that `call_tool` re-checks at runtime.
+            let mut tools = if self.authority_mode.is_rootless() {
+                let mut rootless: Vec<_> = self
+                    .registry
+                    .as_ref()
+                    .map(|reg| reg.tool_defs())
+                    .unwrap_or_else(crate::tool_defs::granular_tool_defs)
+                    .into_iter()
+                    .filter(|t| no_workspace_tool_allowed(t.name.as_ref()))
+                    .collect();
+                if !rootless.iter().any(|t| t.name.as_ref() == "ctx_workspace_get") {
+                    rootless.push(crate::tool_defs::tool_def(
+                        "ctx_workspace_get",
+                        "Read this MCP connection's effective Workspace roots and authority provenance (read-only)",
+                        serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+                    ));
+                }
+                rootless
+            } else {
+                tools
+            };
+
             // Read-only workspace diagnostics: explicitly opt-in until workspace
             // identity is authenticated. Never advertise a mutation endpoint here.
-            let mut tools = tools;
-            if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1") {
+            if !self.authority_mode.is_rootless()
+                && std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1")
+            {
                 for (name, description) in [
                     ("ctx_workspace_list", "List workspaces visible to this MCP connection (read-only)"),
                     ("ctx_workspace_diagnose", "Diagnose workspace authority for this MCP connection (read-only)"),
@@ -779,9 +855,14 @@ impl ServerHandler for LeanCtxServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<rmcp::model::ListResourcesResult, rmcp::ErrorData>> {
-        std::future::ready(Ok(rmcp::model::ListResourcesResult::with_all_items(
-            resources::list_resources(),
-        )))
+        // Rootless: no resources and no templates — project resources would
+        // imply a project root the server does not have.
+        let items = if self.authority_mode.is_rootless() {
+            Vec::new()
+        } else {
+            resources::list_resources()
+        };
+        std::future::ready(Ok(rmcp::model::ListResourcesResult::with_all_items(items)))
     }
 
     async fn read_resource(
@@ -789,6 +870,14 @@ impl ServerHandler for LeanCtxServer {
         request: rmcp::model::ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ReadResourceResult, rmcp::ErrorData> {
+        // Rootless denies before any URI (including file://) is parsed: no
+        // resource surface exists without a workspace.
+        if self.authority_mode.is_rootless() {
+            return Err(rmcp::ErrorData::resource_not_found(
+                "Resources are unavailable in rootless (no-workspace) mode",
+                None,
+            ));
+        }
         let ledger = self.ledger.read().await;
         if let Some(contents) = resources::read_resource(&request.uri, &ledger) {
             return Ok(rmcp::model::ReadResourceResult::new(contents));
@@ -823,6 +912,17 @@ impl ServerHandler for LeanCtxServer {
     ) -> Result<CallToolResult, ErrorData> {
         use std::panic::AssertUnwindSafe;
 
+        // Rootless mode re-checks the same policy `list_tools` used to build
+        // its surface, so a stale tools/list snapshot cannot invoke a tool the
+        // current mode hides (no ctx_call, shell, file tools, …).
+        if self.authority_mode.is_rootless() && !no_workspace_tool_allowed(request.name.as_ref()) {
+            return Err(ErrorData::invalid_params(
+                "Tool unavailable in rootless (no-workspace) mode; restart with an explicit \
+                 workspace root to gain project authority",
+                None,
+            ));
+        }
+
         // Strict isolation must not expose a bypass through ctx_shell, ctx_call,
         // arbitrary edits or specialized readers that do not honor PathJail.
         // These can be re-enabled only after an explicit source-admission audit.
@@ -841,6 +941,37 @@ impl ServerHandler for LeanCtxServer {
             request.name.as_ref(),
             "ctx_workspace_get" | "ctx_workspace_list" | "ctx_workspace_diagnose"
         ) {
+            if self.authority_mode.is_rootless() {
+                if request.name.as_ref() != "ctx_workspace_get" {
+                    return Err(ErrorData::invalid_params(
+                        "Tool unavailable in rootless (no-workspace) mode",
+                        None,
+                    ));
+                }
+                // Rootless diagnostic: no store is opened and no path is
+                // resolved — the honest answer is that there is no workspace.
+                let value = serde_json::json!({
+                    "schemaVersion": 1,
+                    "workspaceId": null,
+                    "primaryRoot": null,
+                    "configuredPrimaryRoot": null,
+                    "primaryStatus": null,
+                    "additionalRoots": [],
+                    "configuredAdditionalRoots": [],
+                    "rootStatus": [],
+                    "authorityFingerprint": null,
+                    "rootSource": "none",
+                    "revision": null,
+                    "mutable": false,
+                    "authenticatedWorkspace": false,
+                    "legacyGlobalRootsInherited": false,
+                    "status": "no-workspace",
+                    "issues": ["no_workspace"],
+                });
+                return Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text(value.to_string()),
+                ]));
+            }
             if std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() != Ok("1") {
                 return Err(ErrorData::invalid_params(
                     "Strict workspace mode is not enabled",
@@ -1107,6 +1238,12 @@ impl ServerHandler for LeanCtxServer {
         &self,
         _context: rmcp::service::NotificationContext<RoleServer>,
     ) {
+        // Rootless: a roots notification is a client claim, not authority. It
+        // must not re-arm root resolution or widen the session.
+        if self.authority_mode.is_rootless() {
+            tracing::info!("Roots/list_changed ignored in rootless (no-workspace) mode");
+            return;
+        }
         tracing::info!("Received roots/list_changed — will re-resolve on next tool call");
         self.roots_resolved
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1127,6 +1264,31 @@ fn startup_rule_maintenance_at_home(home: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rootless surface contract: exactly `ctx_tools` + `ctx_workspace_get`.
+    /// The same predicate guards `list_tools` and `call_tool`, so a stale
+    /// tools/list snapshot cannot invoke a hidden tool.
+    #[test]
+    fn no_workspace_surface_is_exactly_gateway_and_workspace_get() {
+        assert!(no_workspace_tool_allowed("ctx_tools"));
+        assert!(no_workspace_tool_allowed("ctx_workspace_get"));
+        for tool in [
+            "ctx_call",
+            "ctx_shell",
+            "ctx_read",
+            "ctx_search",
+            "ctx_glob",
+            "ctx_tree",
+            "ctx_session",
+            "ctx_workspace_list",
+            "ctx_workspace_diagnose",
+        ] {
+            assert!(
+                !no_workspace_tool_allowed(tool),
+                "rootless surface must hide {tool}"
+            );
+        }
+    }
 
     #[test]
     fn strict_workspace_legacy_tool_surface_is_explicit_opt_in() {

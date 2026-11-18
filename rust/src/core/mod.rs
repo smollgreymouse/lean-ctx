@@ -2,6 +2,7 @@
 // Domain: Compression
 // ---------------------------------------------------------------------------
 pub(crate) mod aggressiveness;
+pub mod authority_mode;
 pub(crate) mod auto_capture;
 pub(crate) mod auto_findings;
 pub(crate) mod behavior_nudge;

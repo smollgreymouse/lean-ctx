@@ -143,7 +143,7 @@ impl ContextEngine {
         tokio::spawn(async move {
             let _ = service.waiting().await;
         });
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_mins(1);
         let mut notifications = Vec::new();
         loop {
             let server_msg = tokio::time::timeout_at(deadline, rx.recv())

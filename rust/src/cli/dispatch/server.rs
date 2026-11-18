@@ -8,6 +8,36 @@ use anyhow::Result;
 pub(super) fn run_mcp_server() -> Result<()> {
     use rmcp::ServiceExt;
 
+    // Parse the launcher authority mode once, before any autodetection or
+    // server construction can run. A wrong pairing is fatal here: a `none`
+    // server must never start with Workspace state attached, and a `workspace`
+    // server must never start without it.
+    let authority_mode =
+        core::authority_mode::AuthorityMode::parse_env().map_err(anyhow::Error::msg)?;
+    let workspace_file_env = std::env::var_os("LEAN_CTX_WORKSPACE_FILE").is_some();
+    let strict_env = std::env::var("LEAN_CTX_STRICT_WORKSPACE").as_deref() == Ok("1");
+    let legacy_tools_env =
+        std::env::var("LEAN_CTX_STRICT_WORKSPACE_LEGACY_TOOLS").as_deref() == Ok("1");
+    match authority_mode {
+        core::authority_mode::AuthorityMode::Workspace => {
+            if !workspace_file_env || !strict_env {
+                return Err(anyhow::anyhow!(
+                    "LEAN_CTX_AUTHORITY_MODE=workspace requires a launcher-bound \
+                     LEAN_CTX_WORKSPACE_FILE and LEAN_CTX_STRICT_WORKSPACE=1"
+                ));
+            }
+        }
+        core::authority_mode::AuthorityMode::None => {
+            if workspace_file_env || strict_env || legacy_tools_env {
+                return Err(anyhow::anyhow!(
+                    "LEAN_CTX_AUTHORITY_MODE=none prohibits LEAN_CTX_WORKSPACE_FILE and \
+                     the strict Workspace flags"
+                ));
+            }
+        }
+        core::authority_mode::AuthorityMode::Legacy => {}
+    }
+
     // Host-only startup configuration. The MCP stream cannot supply authority.
     let receipt_host = crate::server::native_receipts::load_configured_host_authority()
         .map_err(anyhow::Error::msg)?;

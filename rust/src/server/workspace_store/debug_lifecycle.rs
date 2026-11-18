@@ -118,7 +118,7 @@ pub(crate) fn debug_worktree_lifecycle_self_test() -> Result<(), String> {
         return Err("worktree move did not preserve identity/change authority fingerprint".into());
     }
 
-    // 3. Same repository sibling checkout cannot become additional authority.
+    // 3. Same repository sibling checkout registers as independent authority.
     let sibling = tmp.path().join("sibling");
     git(
         &repo,
@@ -129,10 +129,14 @@ pub(crate) fn debug_worktree_lifecycle_self_test() -> Result<(), String> {
             "feature-b",
         ],
     )?;
-    let error = mutate(&git_store, 1, sibling.to_str().ok_or("utf8 sibling")?, true)
-        .expect_err("sibling worktree must be rejected");
-    if !error.contains("worktree") {
-        return Err(format!("unexpected sibling rejection: {error}"));
+    let sibling_state = mutate(&git_store, 1, sibling.to_str().ok_or("utf8 sibling")?, true)
+        .map_err(|error| format!("sibling worktree must register independently: {error}"))?;
+    if sibling_state.revision != 2 || sibling_state.additional != vec![sibling.to_string_lossy()] {
+        return Err("sibling worktree did not register as an independent root".into());
+    }
+    let with_sibling = load_resolved(&git_store)?;
+    if with_sibling.active_additional() != vec![sibling.as_path()] {
+        return Err("registered sibling worktree is not active authority".into());
     }
 
     // 4. remove + re-add of the same Git slot/path must be a new generation.
