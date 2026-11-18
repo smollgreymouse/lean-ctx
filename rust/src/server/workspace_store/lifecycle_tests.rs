@@ -364,7 +364,7 @@ fn missing_legacy_additional_git_worktree_does_not_block_independent_git_additio
 }
 
 #[test]
-fn legacy_store_does_not_grant_authority_to_primary_sibling_worktree() {
+fn legacy_store_grants_each_registered_root_independent_authority() {
     let fixture = RepoFixture::new();
     let linked = fixture.linked("legacy-linked");
     let value = StoredWorkspace {
@@ -387,15 +387,17 @@ fn legacy_store_does_not_grant_authority_to_primary_sibling_worktree() {
 
     let resolved = resolve(value);
     assert_eq!(resolved.primary.state, WorkspaceRootState::Active);
+    // A registered worktree of the same repository is authority on its own:
+    // shared repository identity neither suppresses nor spreads it.
+    assert_eq!(resolved.additional[0].state, WorkspaceRootState::Active);
     assert_eq!(
-        resolved.additional[0].state,
-        WorkspaceRootState::SiblingWorktree
+        resolved.active_additional(),
+        vec![linked.canonicalize().unwrap().as_path()]
     );
-    assert!(resolved.active_additional().is_empty());
 }
 
 #[test]
-fn legacy_two_additional_sibling_worktrees_are_both_fail_closed() {
+fn legacy_two_additional_sibling_worktrees_are_both_active() {
     let primary_tmp = tempfile::tempdir().unwrap();
     let primary = fixture_root(primary_tmp.path(), "primary");
     fs::create_dir(&primary).unwrap();
@@ -425,34 +427,66 @@ fn legacy_two_additional_sibling_worktrees_are_both_fail_closed() {
             .unwrap()
             .to_string_lossy()
             .into_owned(),
-        additional,
+        additional: additional.clone(),
     };
 
     let resolved = resolve(value);
+    assert_eq!(
+        resolved.primary.state,
+        WorkspaceRootState::Active,
+        "unrelated primary stays active"
+    );
     assert!(
         resolved
             .additional
             .iter()
-            .all(|status| status.state == WorkspaceRootState::SiblingWorktree)
+            .all(|status| status.state == WorkspaceRootState::Active)
     );
-    assert!(resolved.active_additional().is_empty());
+    let mut active = resolved
+        .active_additional()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    active.sort();
+    assert_eq!(active, additional);
 }
 
 #[test]
-fn sibling_worktree_of_primary_repository_is_not_additional_authority() {
+fn sibling_worktree_of_primary_repository_registers_independently() {
     let fixture = RepoFixture::new();
     let linked = fixture.linked("linked");
     let store = fixture.store("workspace.json");
     initialized_store(&store, fixture.main.to_str().unwrap()).unwrap();
 
-    let error = mutate(&store, 1, linked.to_str().unwrap(), true)
-        .expect_err("sibling worktree must be topology, not multi-root authority");
-    assert!(error.contains("sibling worktree"), "{error}");
-    assert!(load(&store).unwrap().additional.is_empty());
+    let state = mutate(&store, 1, linked.to_str().unwrap(), true)
+        .expect("a second worktree of one repository may register as its own root");
+    assert_eq!(state.revision, 2);
+    assert_eq!(state.additional, vec![linked.to_string_lossy()]);
+
+    let resolved = load_resolved(&store).unwrap();
+    assert_eq!(resolved.additional[0].state, WorkspaceRootState::Active);
+    assert_eq!(resolved.active_additional(), vec![linked.as_path()]);
+
+    // An unregistered sibling of the registered worktree stays inaccessible:
+    // registration is per-path and never spreads through repository identity.
+    git(&fixture.main, &["branch", "feature-c"]);
+    let unregistered = fixture_root(fixture.tmp.path(), "unregistered");
+    git(
+        &fixture.main,
+        &[
+            "worktree",
+            "add",
+            unregistered.to_str().unwrap(),
+            "feature-c",
+        ],
+    );
+    let after_sibling = load_resolved(&store).unwrap();
+    assert_eq!(after_sibling.configured.additional.len(), 1);
+    assert_eq!(after_sibling.active_additional(), vec![linked.as_path()]);
 }
 
 #[test]
-fn sibling_worktrees_cannot_both_be_additional_roots() {
+fn sibling_worktrees_register_as_independent_roots_and_revoke_separately() {
     let primary_tmp = tempfile::tempdir().unwrap();
     let primary = fixture_root(primary_tmp.path(), "primary");
     fs::create_dir(&primary).unwrap();
@@ -471,12 +505,33 @@ fn sibling_worktrees_cannot_both_be_additional_roots() {
     let first_state = mutate(&store, 1, first.to_str().unwrap(), true).unwrap();
     assert_eq!(first_state.revision, 2);
 
-    let error = mutate(&store, 2, second.to_str().unwrap(), true)
-        .expect_err("two checkout slots of one local repository must not both be authority");
-    assert!(error.contains("same local Git repository"), "{error}");
-    let current = load(&store).unwrap();
-    assert_eq!(current.additional, vec![first.to_string_lossy()]);
-    assert_eq!(current.revision, 2);
+    let first_resolved = load_resolved(&store).unwrap();
+    let first_fingerprint = first_resolved.authority_fingerprint.clone();
+
+    let second_state = mutate(&store, 2, second.to_str().unwrap(), true)
+        .expect("each checkout slot of one local repository registers independently");
+    assert_eq!(second_state.revision, 3);
+    let mut expected = vec![first.to_string_lossy(), second.to_string_lossy()];
+    expected.sort();
+    assert_eq!(second_state.additional, expected);
+
+    // The fingerprint represents the registered root set: registering the
+    // second root changed it, and revoking one root must change it again
+    // without touching the other.
+    let both = load_resolved(&store).unwrap();
+    assert_ne!(
+        first_fingerprint, both.authority_fingerprint,
+        "registering the second checkout must change the authority fingerprint"
+    );
+    let one_removed = mutate(&store, 3, second.to_str().unwrap(), false).unwrap();
+    assert_eq!(one_removed.additional, vec![first.to_string_lossy()]);
+    assert_eq!(one_removed.revision, 4);
+    let after_removal = load_resolved(&store).unwrap();
+    assert_ne!(
+        both.authority_fingerprint, after_removal.authority_fingerprint,
+        "revoking one root must change the authority fingerprint"
+    );
+    assert_eq!(after_removal.active_additional(), vec![first.as_path()]);
 }
 
 #[test]
@@ -659,10 +714,9 @@ fn removing_moved_additional_by_current_path_uses_checkout_identity() {
     assert!(removed.additional.is_empty());
     let removed_resolved = load_resolved(&store).unwrap();
     assert!(
-        removed_resolved
+        !removed_resolved
             .checkout_bindings
-            .get(linked.to_str().unwrap())
-            .is_none()
+            .contains_key(linked.to_str().unwrap())
     );
 }
 

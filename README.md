@@ -71,6 +71,28 @@ Files · repositories · tool results · configured providers
   A context-only integration records its prepared result; the host owns the
   subsequent model call.
 
+### Launcher authority mode and rootless operation
+
+A trusted launcher (Harr) fixes an MCP server's authority mode before exec with
+`LEAN_CTX_AUTHORITY_MODE`:
+
+- `workspace` — the launcher binds a Workspace file and strict flags; the
+  launch fails if they are missing.
+- `none` — rootless: the process cwd, `.`, MCP arguments, client roots
+  (`roots/list`, `roots/list_changed`) and `LEAN_CTX_EXTRA_ROOTS` never grant
+  read/write authority. The initial tool surface is exactly `ctx_tools` and
+  `ctx_workspace_get` (which answers `no-workspace` without opening a store),
+  resources are empty, and the gateway exposes only downstream servers whose
+  trusted global config sets `workspace_required = false`.
+- absent — direct LeanCTX clients keep the previous behavior.
+
+The mode is parsed once per process and is immutable; a wrong pairing fails
+fast before any Workspace store is opened. Launchers can check the paired
+runtime before starting it with `lean-ctx harr-capabilities --json`, which
+prints `{"schema_version":1,"runtime":"lean-ctx","capabilities":[…]}` and
+exits non-zero on any other usage; the capability list only reports behavior
+that is actually implemented.
+
 For coding workflows, start with **Claude Code, Cursor or Codex**.
 [The installation matrix](docs/integrations/installation-matrix.md) distinguishes
 first-class paths from other compatibility references.
@@ -750,6 +772,36 @@ npm uninstall -g lean-ctx-bin  # npm
     <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=yvgude/lean-ctx&type=Date" />
   </picture>
 </a>
+
+## Low-memory local Rust builds
+
+The opt-in helper runs the measured development build settings without changing
+Cargo's normal profiles or CI commands:
+
+```bash
+python3 scripts/cargo-low-memory.py build
+python3 scripts/cargo-low-memory.py check
+```
+
+`build` builds the `lean-ctx` binary with one Cargo job, incremental compilation,
+no debuginfo, one codegen unit and the root crate at `opt-level=0`. `check`
+checks the library and test code with the same settings; it does not compile or
+run the unit-test harness.
+
+The default cache is under `${XDG_CACHE_HOME:-~/.cache}/leanctx/low-memory/`,
+with a separate directory for each canonical checkout path. Set
+`CARGO_TARGET_DIR` to reuse another persistent cache. Keep it on a disk-backed
+filesystem and outside `/tmp`, other temporary directories and Git metadata;
+the helper rejects those obvious unsafe locations and Linux tmpfs mounts. Other
+platforms still require choosing a persistent disk-backed volume.
+
+On the machine measured for this profile, the full binary build used a peak RSS
+of **12.75 GiB** and took **5:52**; an unchanged repeat took **0.40 s**. The
+`check --lib --tests` command used **7.26 GiB** peak RSS. Compiling the unit-test
+harness was stopped at **14.03 GiB** with only **1.6 GiB** available, so this
+helper does not claim that `cargo test` is safe under the same memory limit.
+These measurements describe that machine, Rust toolchain and source revision;
+they are not a memory guarantee for other environments.
 
 ## Contributing
 

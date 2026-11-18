@@ -134,6 +134,13 @@ impl LeanCtxServer {
     #[expect(deprecated)]
     pub(crate) async fn resolve_roots_once(&self) {
         use std::sync::atomic::Ordering;
+        // Rootless mode never adopts client roots: initialize cleared the
+        // session and `has_client_roots` is false, so this is unreachable in
+        // practice — the explicit guard keeps the invariant against future
+        // callers regardless of notification ordering.
+        if self.authority_mode.is_rootless() {
+            return;
+        }
         if !self.has_client_roots.load(Ordering::Relaxed) {
             return;
         }

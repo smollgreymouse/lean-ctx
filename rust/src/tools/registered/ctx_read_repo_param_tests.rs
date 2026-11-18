@@ -37,6 +37,7 @@ async fn repo_param_resolves_against_repo_root_no_cache_collision() {
     let session = Arc::new(RwLock::new(SessionState::new()));
     let ctx = ToolContext {
         project_root: dir_a.path().to_string_lossy().to_string(),
+        authority_mode: crate::core::authority_mode::AuthorityMode::Legacy,
         extra_roots: Vec::new(),
         minimal: false,
         resolved_paths: std::collections::HashMap::new(),
@@ -104,6 +105,7 @@ async fn repo_param_unknown_alias_errors_with_known_aliases() {
     let session = Arc::new(RwLock::new(SessionState::new()));
     let ctx = ToolContext {
         project_root: ".".to_string(),
+        authority_mode: crate::core::authority_mode::AuthorityMode::Legacy,
         extra_roots: Vec::new(),
         minimal: false,
         resolved_paths: std::collections::HashMap::new(),

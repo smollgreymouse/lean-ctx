@@ -60,20 +60,59 @@ impl Rt {
 /// forwarded to [`mcp_catalog::proxy`] so output post-processing (#1095) can index
 /// downstream results into the project's stores. Empty = no project scope.
 pub fn run(args: &Map<String, Value>, project_root: &str) -> Result<String, String> {
-    run_with_progress(args, project_root, None)
+    run_with_progress(
+        args,
+        project_root,
+        crate::core::authority_mode::AuthorityMode::Legacy,
+        None,
+    )
+}
+
+/// Trusted scope view of the downstream config: only servers allowed by
+/// [`server_allowed_in_scope`] survive. The shared catalog is never mutated —
+/// this filtered config feeds only the calls below, so a rootless query cannot
+/// change what bound sessions (or the dashboard) see.
+fn scoped_gateway(
+    cfg: &mcp_catalog::GatewayConfig,
+    authority_mode: crate::core::authority_mode::AuthorityMode,
+) -> mcp_catalog::GatewayConfig {
+    let mut scoped = cfg.clone();
+    scoped.servers = cfg
+        .servers
+        .iter()
+        .filter(|server| mcp_catalog::server_allowed_in_scope(authority_mode, server))
+        .cloned()
+        .collect();
+    scoped
 }
 
 /// Execute a ctx_tools action with optional UI-only downstream progress forwarding.
 pub fn run_with_progress(
     args: &Map<String, Value>,
     project_root: &str,
+    authority_mode: crate::core::authority_mode::AuthorityMode,
     progress: Option<mcp_catalog::client::ProgressCallback>,
 ) -> Result<String, String> {
     let cfg = Config::load();
     if !cfg.gateway.enabled_effective() {
         return Err(DISABLED_HINT.to_string());
     }
-    if cfg.gateway.active_servers().next().is_none() {
+    // One trusted policy snapshot drives every action (list/find/refresh/call),
+    // applied before ranking, transport creation or discovery. In rootless
+    // scope only servers explicitly configured with `workspace_required=false`
+    // are reachable — a handle, alias or cold call for anything else is denied
+    // before a downstream process is spawned or a socket is opened.
+    let gateway = scoped_gateway(&cfg.gateway, authority_mode);
+    if gateway.active_servers().next().is_none() {
+        if authority_mode.is_rootless() && cfg.gateway.active_servers().next().is_some() {
+            return Err(
+                "rootless (no-workspace) mode: every configured downstream server requires \
+                 workspace authority. Restart with an explicit workspace root, or mark \
+                 independently verified integrations with `workspace_required = false` in the \
+                 trusted global gateway configuration."
+                    .to_string(),
+            );
+        }
         return Err(
             "gateway is enabled but no downstream servers are configured \
              (add one or more [[gateway.servers]] entries)."
@@ -95,13 +134,13 @@ pub fn run_with_progress(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let outcome = rt.block_on(mcp_catalog::find(&cfg.gateway, &query));
+            let outcome = rt.block_on(mcp_catalog::find(&gateway, &query));
             Ok(mcp_catalog::render_cards(&outcome))
         }
-        "list" => Ok(rt.block_on(mcp_catalog::servers_overview(&cfg.gateway))),
+        "list" => Ok(rt.block_on(mcp_catalog::servers_overview(&gateway))),
         "refresh" => {
             mcp_catalog::catalog::invalidate();
-            let outcome = rt.block_on(mcp_catalog::find(&cfg.gateway, ""));
+            let outcome = rt.block_on(mcp_catalog::find(&gateway, ""));
             Ok(format!(
                 "gateway catalog refreshed.\n\n{}",
                 mcp_catalog::render_cards(&outcome)
@@ -116,8 +155,20 @@ pub fn run_with_progress(
                 None | Some(Value::Null) => Map::new(),
                 Some(_) => return Err("'arguments' must be a JSON object".to_string()),
             };
+            // Pre-transport policy check, covering the missing-catalog-entry
+            // case too: the owning server must exist in the scoped (allowed)
+            // view before any downstream transport is created.
+            if let Some((server_name, _)) = mcp_catalog::catalog::split_namespaced(tool)
+                && !gateway
+                    .active_servers()
+                    .any(|server| server.name == server_name)
+            {
+                return Err(format!(
+                    "downstream server `{server_name}` is unavailable in this scope"
+                ));
+            }
             rt.block_on(mcp_catalog::proxy_with_progress(
-                &cfg.gateway,
+                &gateway,
                 tool,
                 arguments,
                 project_root,
@@ -169,13 +220,19 @@ mod tests {
         let _ = run(args.as_object().unwrap(), ""); // Ok|Err, niemals Panic
     }
     #[test]
+    // The spawned task must live on the shared process-lifetime runtime, so the
+    // handle is awaited from a later `Rt` — the yield-then-await split is the
+    // point of the test, not an accident (clippy::async_yields_async).
+    #[allow(clippy::async_yields_async)]
     fn gateway_runtime_survives_between_tool_calls() {
         let first = Rt::new().expect("gateway runtime");
         let (tx, rx) = tokio::sync::oneshot::channel::<u8>();
         let task = first.block_on(async {
             tokio::spawn(async move { rx.await.expect("runtime stayed alive") })
         });
-        drop(first);
+        // Rt wraps a &'static runtime and is not Drop; releasing the handle
+        // documents that the task must survive the caller's handle going away.
+        let _ = first;
 
         let second = Rt::new().expect("same gateway runtime");
         let value = second.block_on(async move {
@@ -183,5 +240,35 @@ mod tests {
             task.await.expect("gateway task was not cancelled")
         });
         assert_eq!(value, 7);
+    }
+
+    /// Rootless scope: the trusted policy snapshot keeps only servers with the
+    /// explicit config opt-out, while bound/legacy scope keeps everything.
+    #[test]
+    fn scoped_gateway_filters_by_authority_scope() {
+        use crate::core::authority_mode::AuthorityMode;
+
+        let needs_workspace = mcp_catalog::GatewayServer {
+            name: "codegraph".into(),
+            ..Default::default()
+        };
+        let workspace_free = mcp_catalog::GatewayServer {
+            name: "gitlab".into(),
+            workspace_required: false,
+            ..Default::default()
+        };
+        let cfg = mcp_catalog::GatewayConfig {
+            servers: vec![needs_workspace, workspace_free],
+            ..Default::default()
+        };
+
+        let rootless = scoped_gateway(&cfg, AuthorityMode::None);
+        assert_eq!(rootless.servers.len(), 1);
+        assert_eq!(rootless.servers[0].name, "gitlab");
+
+        let bound = scoped_gateway(&cfg, AuthorityMode::Workspace);
+        assert_eq!(bound.servers.len(), 2);
+        let legacy = scoped_gateway(&cfg, AuthorityMode::Legacy);
+        assert_eq!(legacy.servers.len(), 2);
     }
 }

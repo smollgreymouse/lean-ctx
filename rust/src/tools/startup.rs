@@ -29,7 +29,14 @@ pub(super) fn canonicalize_path(path: &std::path::Path) -> String {
 pub(super) fn detect_startup_context(
     explicit_project_root: Option<&str>,
     startup_cwd: Option<&std::path::Path>,
+    authority_mode: crate::core::authority_mode::AuthorityMode,
 ) -> StartupContext {
+    // Rootless (`none`) derives nothing: the process CWD, an explicit root
+    // argument or a project marker scan must never mint session authority.
+    // A launcher-bound root arrives later through the Workspace store path.
+    if authority_mode.is_rootless() {
+        return StartupContext::default();
+    }
     let shell_cwd = startup_cwd.map(canonicalize_path);
     let project_root = explicit_project_root
         .map(|root| canonicalize_path(std::path::Path::new(root)))
@@ -134,5 +141,40 @@ mod tests {
         let root = result.unwrap();
         let canonical = crate::core::pathutil::safe_canonicalize_or_self(&pkg);
         assert_eq!(root, canonical);
+    }
+
+    /// Rootless startup derives nothing: the process cwd and any explicit root
+    /// argument must not mint project or shell authority in `none` mode.
+    #[test]
+    fn rootless_startup_context_is_empty() {
+        use crate::core::authority_mode::AuthorityMode;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+
+        // Legacy keeps the existing derivation: the derived root is the
+        // outermost project marker, which on some hosts legitimately sits
+        // above the tempdir (e.g. a `.git` directly in TMPDIR).
+        let derived = detect_startup_context(None, Some(&project), AuthorityMode::Legacy);
+        assert_eq!(
+            derived.project_root,
+            maybe_derive_project_root_from_absolute(&project).map(|p| canonicalize_path(&p)),
+        );
+        assert!(derived.shell_cwd.is_some());
+
+        let rootless = detect_startup_context(None, Some(&project), AuthorityMode::None);
+        assert_eq!(rootless.project_root, None);
+        assert_eq!(rootless.shell_cwd, None);
+
+        // Even an explicit root argument cannot create authority in none mode:
+        // a launcher-bound root arrives only through the Workspace store path.
+        let explicit = detect_startup_context(
+            Some(project.to_str().unwrap()),
+            Some(&project),
+            AuthorityMode::None,
+        );
+        assert_eq!(explicit.project_root, None);
+        assert_eq!(explicit.shell_cwd, None);
     }
 }

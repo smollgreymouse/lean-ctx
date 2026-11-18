@@ -23,6 +23,16 @@ impl LeanCtxServer {
     /// Absolute paths and "." are returned as-is. Relative paths like "src/main.rs"
     /// are joined with project_root so tools work regardless of the server's cwd.
     pub async fn resolve_path(&self, path: &str) -> Result<String, String> {
+        // Rootless check comes before absolute-path handling and any fallback:
+        // no path — absolute, relative, "." or a shell cwd — may resolve when
+        // the server has no workspace.
+        if self.authority_mode.is_rootless() {
+            return Err(
+                "workspace required: this server runs in rootless (no-workspace) mode; \
+                 restart with an explicit workspace root to gain project authority"
+                    .to_string(),
+            );
+        }
         let normalized = crate::core::pathutil::normalize_tool_path(path);
         if normalized.is_empty() || normalized == "." {
             return Ok(normalized);

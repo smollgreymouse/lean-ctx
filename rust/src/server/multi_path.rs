@@ -155,6 +155,7 @@ mod tests {
     fn test_ctx() -> ToolContext {
         ToolContext {
             project_root: "/test/project".to_string(),
+            authority_mode: crate::core::authority_mode::AuthorityMode::Legacy,
             extra_roots: Vec::new(),
             minimal: false,
             resolved_paths: std::collections::HashMap::new(),

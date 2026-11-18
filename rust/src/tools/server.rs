@@ -91,6 +91,10 @@ pub struct LeanCtxServer {
     pub(crate) workspace_registry: crate::server::workspace_registry::SharedWorkspaceRegistry,
     /// Bound at construction by the trusted launcher, never selected by a tool.
     pub(crate) workspace_store_path: Option<std::path::PathBuf>,
+    /// Launcher authority mode, parsed once per process and immutable after
+    /// construction (`core::authority_mode`). Handlers consult this field,
+    /// never the environment, so a late env change cannot re-scope the server.
+    pub(crate) authority_mode: crate::core::authority_mode::AuthorityMode,
     pub tool_calls: Arc<RwLock<Vec<ToolCallRecord>>>,
     pub call_count: Arc<AtomicUsize>,
     /// Every tool call, counted unconditionally at the top of

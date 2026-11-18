@@ -121,6 +121,35 @@ pub struct GatewayServer {
     /// `compression` | `none`. Drives routing in [`super::postprocess`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub integration: String,
+
+    /// Whether this downstream server needs project workspace authority to be
+    /// reachable. Global-only trusted configuration (this whole `[gateway]`
+    /// block is): a rootless (`LEAN_CTX_AUTHORITY_MODE=none`) server may reach
+    /// only entries explicitly marked `false` here. Defaults to `true`, so an
+    /// unknown or new entry never becomes reachable without workspace
+    /// authority; tool arguments, downstream `tools/list`, descriptions and
+    /// schemas can never override it.
+    #[serde(default = "default_workspace_required")]
+    pub workspace_required: bool,
+}
+
+fn default_workspace_required() -> bool {
+    true
+}
+
+/// The single trusted scope policy for downstream servers. `scope` comes from
+/// the launcher authority mode (immutable per process); `workspace_required`
+/// comes from the trusted `[[gateway.servers]]` config. Nothing else — not
+/// tool arguments, not downstream-advertised metadata — participates.
+pub fn server_allowed_in_scope(
+    scope: crate::core::authority_mode::AuthorityMode,
+    server: &GatewayServer,
+) -> bool {
+    match scope {
+        crate::core::authority_mode::AuthorityMode::None => !server.workspace_required,
+        crate::core::authority_mode::AuthorityMode::Workspace
+        | crate::core::authority_mode::AuthorityMode::Legacy => true,
+    }
 }
 
 impl Default for GatewayServer {
@@ -140,6 +169,7 @@ impl Default for GatewayServer {
             oauth: false,
             oauth_scopes: Vec::new(),
             integration: String::new(),
+            workspace_required: true,
         }
     }
 }
@@ -449,6 +479,64 @@ integration = "codebase-pack"
         // Re-serialize and ensure the integration override survives the trip.
         let back = toml::to_string(&cfg).expect("serialize");
         assert!(back.contains("integration = \"codebase-pack\""));
+    }
+
+    #[test]
+    fn workspace_required_defaults_to_true_and_survives_round_trip() {
+        let toml_src = r#"
+enabled = true
+
+[[servers]]
+name = "fs"
+command = "mcp-fs"
+
+[[servers]]
+name = "gitlab"
+command = "mcp-gitlab"
+workspace_required = false
+"#;
+        let cfg: GatewayConfig = toml::from_str(toml_src).expect("parse");
+        assert!(
+            cfg.servers[0].workspace_required,
+            "omitted field defaults to true"
+        );
+        assert!(!cfg.servers[1].workspace_required);
+        let back = toml::to_string(&cfg).expect("serialize");
+        assert!(back.contains("workspace_required = false"));
+    }
+
+    #[test]
+    fn rootless_scope_admits_only_explicitly_workspace_free_servers() {
+        let needs_workspace = GatewayServer {
+            name: "codegraph".into(),
+            ..Default::default()
+        };
+        let workspace_free = GatewayServer {
+            name: "gitlab".into(),
+            workspace_required: false,
+            ..Default::default()
+        };
+
+        use crate::core::authority_mode::AuthorityMode;
+        // Rootless: only the explicit opt-out is reachable, regardless of the
+        // entry's name or transport.
+        assert!(!server_allowed_in_scope(
+            AuthorityMode::None,
+            &needs_workspace
+        ));
+        assert!(server_allowed_in_scope(
+            AuthorityMode::None,
+            &workspace_free
+        ));
+        // Bound sessions and the legacy direct-client scope keep full access.
+        assert!(server_allowed_in_scope(
+            AuthorityMode::Workspace,
+            &needs_workspace
+        ));
+        assert!(server_allowed_in_scope(
+            AuthorityMode::Legacy,
+            &needs_workspace
+        ));
     }
 
     #[test]

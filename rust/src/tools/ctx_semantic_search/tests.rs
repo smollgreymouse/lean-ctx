@@ -172,7 +172,7 @@ mod root_resolution_tests {
                             "source path is outside the request authority"
                         );
                     },
-                )
+                );
             },
         );
     }
@@ -193,9 +193,9 @@ mod root_resolution_tests {
                         assert_eq!(
                             resolve_search_root(&b.to_string_lossy()).unwrap_err(),
                             "source path is outside the request authority"
-                        )
+                        );
                     },
-                )
+                );
             },
         );
     }

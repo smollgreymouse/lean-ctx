@@ -324,6 +324,9 @@ tokio::task_local! {
 #[derive(Clone)]
 pub struct ToolContext {
     pub project_root: String,
+    /// Launcher authority mode snapshotted from the server (immutable per
+    /// process). Gateway policy (`ctx_tools`) consults it; tools never set it.
+    pub authority_mode: crate::core::authority_mode::AuthorityMode,
     /// Session-scoped trusted roots (MCP `roots/list`, config `extra_roots`),
     /// snapshotted from the session so sync handlers can honor them without an
     /// async lock. Empty = single-root jail behaviour (#403).
@@ -389,6 +392,7 @@ impl Default for ToolContext {
     fn default() -> Self {
         Self {
             project_root: String::new(),
+            authority_mode: crate::core::authority_mode::AuthorityMode::Legacy,
             extra_roots: Vec::new(),
             minimal: false,
             resolved_paths: std::collections::HashMap::new(),

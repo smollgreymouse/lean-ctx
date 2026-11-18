@@ -2,42 +2,6 @@
 
 LeanCTX Engine selects context, applies supported access and content controls, and records observable context operations; compression is one capability within that path.
 
-## Mandatory Routing Decision (Direct or Swarm)
-
-For every substantive task in this repository, load and follow
-`docs/internal/skills/agent-orchestration.md` before taking task actions. The
-**routing decision** is mandatory; a swarm is not. The lead uses 0 to 15
-workers (0 = direct execution) and picks the path with the shortest
-accepted-result time that keeps the full quality bar — the routing gate in the
-skill defines how. Fifteen agents is a hard concurrent maximum; every worker
-gets a distinct role. Security, redaction, public contracts/schemas,
-migrations, releases, and data-loss risk normally get an independent reviewer.
-
-This rule is owned by the orchestration lead. Agents with a concrete delegated
-subtask are swarm workers: they coordinate through lean-ctx and complete their
-assigned role, but do not recursively launch another swarm unless the lead
-explicitly asks them to do so.
-
-- **Runtime:** every Codex CLI agent MUST use `--model gpt-6-luna` and
-  `-c 'model_reasoning_effort="max"'`.
-- **LeanCTX coordination:** every agent registers on the lean-ctx agent bus,
-  checks directives, and uses lean-ctx context tools; the lead records the
-  integrated decision and progress through lean-ctx.
-- **Topology:** assign independent, non-duplicative roles. When a reviewer is
-  used on a non-parallel change, it validates the implementer's result after
-  it is ready — including whether each new test earns its place (see
-  Test Policy).
-- **Safe ownership:** only one agent may edit a given file or shared worktree at
-  a time. Parallel agents investigate, test, or review in isolation unless
-  explicit file ownership or separate worktrees are assigned.
-- **Completion:** the lead integrates the findings, runs the relevant quality
-  gates, and reports the agents' evidence. A task is not complete merely
-  because an agent returned successfully.
-
-Direct conversational answers, status updates, and clarification questions are
-not substantive tasks and do not require a swarm. The user may explicitly
-request a different runtime or a single-agent exception.
-
 ## Integration Mode: Replace
 
 Native Read/Grep/Glob/Shell are **denied by policy**. lean-ctx MCP tools are the
