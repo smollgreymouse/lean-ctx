@@ -42,6 +42,48 @@ fn fixture_root(base: &Path, name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}/{name}", parent.display()))
 }
 
+#[test]
+fn workspace_root_preflight_is_read_only_typed_and_rechecked_before_store_creation() {
+    let fixture = tempfile::tempdir().expect("tempdir");
+    let root = fixture_root(fixture.path(), "project");
+    fs::create_dir(&root).unwrap();
+
+    let canonical = crate::core::pathutil::canonicalize_raw(&root).unwrap();
+    assert_eq!(
+        validate_root_candidate(root.to_str().unwrap()).unwrap(),
+        Some(canonical.to_string_lossy().into_owned())
+    );
+    let store = fixture.path().join("workspace.json");
+    assert!(
+        !store.exists(),
+        "preflight must not create a Workspace store"
+    );
+
+    let missing = fixture_root(fixture.path(), "missing");
+    assert_eq!(
+        validate_root_candidate(missing.to_str().unwrap()).unwrap(),
+        None
+    );
+    let home = crate::core::pathutil::canonicalize_raw(&dirs::home_dir().expect("home directory"))
+        .unwrap();
+    assert_eq!(
+        validate_root_candidate(home.to_str().unwrap()).unwrap(),
+        None
+    );
+    #[cfg(unix)]
+    assert_eq!(validate_root_candidate("/").unwrap(), None);
+
+    // A non-NotFound I/O error is not a policy verdict and cannot downgrade to
+    // rootless. An embedded NUL deterministically exercises InvalidInput.
+    assert!(validate_root_candidate("/invalid\0root").is_err());
+
+    // The preflight is advisory only: creation must re-run the validator. If
+    // the candidate disappears between the two calls, no store is written.
+    fs::remove_dir(&root).unwrap();
+    assert!(initialized_store(&store, canonical.to_str().unwrap()).is_err());
+    assert!(!store.exists());
+}
+
 struct RepoFixture {
     tmp: tempfile::TempDir,
     main: std::path::PathBuf,

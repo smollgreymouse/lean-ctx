@@ -3,6 +3,23 @@
 //! are exposed to the MCP tool registry / prompt or to a remotely selected ID.
 use std::path::Path;
 
+fn validate_root_response(root: &str) -> Result<serde_json::Value, String> {
+    match crate::server::workspace_store::validate_root_candidate(root)? {
+        Some(root) => Ok(serde_json::json!({
+            "schema_version": 1,
+            "operation": "validate-root",
+            "status": "valid",
+            "root": root,
+        })),
+        None => Ok(serde_json::json!({
+            "schema_version": 1,
+            "operation": "validate-root",
+            "status": "unsuitable",
+            "reason": "unavailable-or-unsafe",
+        })),
+    }
+}
+
 #[cfg(debug_assertions)]
 fn verify_same_process_isolation() -> Result<(), String> {
     use crate::core::pathjail::jail_path_with_roots;
@@ -295,10 +312,26 @@ pub(crate) fn run(args: &[String]) -> i32 {
     }
     let Some(operation) = args.first().map(String::as_str) else {
         eprintln!(
-            "Usage: lean-ctx workspace-admin <create|show|reconcile|add|remove> <absolute-store-path> [root] [expected-revision]"
+            "Usage: lean-ctx workspace-admin <validate-root <absolute-root>|create|show|reconcile|add|remove> [absolute-store-path] [root] [expected-revision]"
         );
         return 2;
     };
+    if operation == "validate-root" {
+        if args.len() != 2 {
+            eprintln!("Usage: lean-ctx workspace-admin validate-root <absolute-root>");
+            return 2;
+        }
+        return match validate_root_response(&args[1]) {
+            Ok(response) => {
+                println!("{response}");
+                0
+            }
+            Err(error) => {
+                eprintln!("Workspace root validation failed: {error}");
+                1
+            }
+        };
+    }
     let Some(store) = args.get(1) else {
         eprintln!("An explicit absolute store path is required");
         return 2;
@@ -340,6 +373,44 @@ pub(crate) fn run(args: &[String]) -> i32 {
             eprintln!("Workspace admin failed: {error}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod root_validation_tests {
+    use super::validate_root_response;
+    use std::fs;
+
+    #[test]
+    fn cli_verdict_uses_workspace_validator_without_store_side_effects() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let canonical = crate::core::pathutil::canonicalize_raw(&root).unwrap();
+        let response = validate_root_response(canonical.to_str().unwrap()).unwrap();
+        assert_eq!(response["schema_version"], 1);
+        assert_eq!(response["operation"], "validate-root");
+        assert_eq!(response["status"], "valid");
+        assert_eq!(response["root"], canonical.to_string_lossy().as_ref());
+        assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+
+        let home =
+            crate::core::pathutil::canonicalize_raw(&dirs::home_dir().expect("home directory"))
+                .unwrap();
+        let unsuitable = validate_root_response(home.to_str().unwrap()).unwrap();
+        assert_eq!(unsuitable["status"], "unsuitable");
+        assert_eq!(unsuitable["reason"], "unavailable-or-unsafe");
+        #[cfg(unix)]
+        {
+            let filesystem_root = validate_root_response("/").unwrap();
+            assert_eq!(filesystem_root["status"], "unsuitable");
+        }
+        assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cli_internal_validation_error_has_no_normal_verdict() {
+        assert!(validate_root_response("/invalid\0root").is_err());
     }
 }
 

@@ -600,14 +600,53 @@ fn validate_configured_root(root: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn validate_root(root: &str) -> Result<String, String> {
-    // Keep Windows long/short and verbatim path spellings consistent with Git checkout discovery.
-    let canonical =
-        crate::core::pathutil::canonicalize_raw(Path::new(root)).map_err(|e| e.to_string())?;
-    if !canonical.is_dir() || crate::core::pathutil::is_broad_or_unsafe_root(&canonical) {
-        return Err("Workspace root is unavailable or unsafe".into());
+/// Validate a candidate before Harr creates or opens a Workspace store.
+/// `Ok(None)` is a normal policy verdict for an unavailable or unsafe root;
+/// `Err` is reserved for unexpected I/O/internal failures and must fail closed.
+pub(crate) fn validate_root_candidate(root: &str) -> Result<Option<String>, String> {
+    let path = Path::new(root);
+    if !path.is_absolute() {
+        return Err("Workspace root must be absolute".into());
     }
-    Ok(canonical.to_string_lossy().into_owned())
+
+    // Keep Windows long/short and verbatim path spellings consistent with Git
+    // checkout discovery. A vanished path is an ordinary unsuitable candidate;
+    // permission and other I/O failures remain errors instead of being hidden.
+    let canonical = match crate::core::pathutil::canonicalize_raw(path) {
+        Ok(canonical) => canonical,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(format!("cannot canonicalize Workspace root: {error}")),
+    };
+
+    let metadata = match std::fs::metadata(&canonical) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(format!("cannot inspect Workspace root: {error}")),
+    };
+
+    if !metadata.is_dir() || crate::core::pathutil::is_broad_or_unsafe_root(&canonical) {
+        return Ok(None);
+    }
+    Ok(Some(canonical.to_string_lossy().into_owned()))
+}
+
+pub(crate) fn validate_root(root: &str) -> Result<String, String> {
+    validate_root_candidate(root)?
+        .ok_or_else(|| "Workspace root is unavailable or unsafe".to_string())
 }
 
 fn binding_for_root(root: &str) -> Option<StoredCheckoutBinding> {

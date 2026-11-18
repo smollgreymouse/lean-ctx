@@ -51,10 +51,12 @@ pub fn run() {
         // Capabilities are advertised only once their runtime behavior is
         // implemented and checked: authority-mode (explicit/immutable mode
         // handling in run_mcp_server + server state), no-workspace (rootless
-        // tool/resource/path guards) and workspace-sibling-checkouts (multiple
-        // registered worktrees of one repository with independent authority).
+        // tool/resource/path guards), workspace-sibling-checkouts (multiple
+        // registered worktrees of one repository with independent authority),
+        // and workspace-root-validation (read-only validation using the same
+        // Rust validator as Workspace store creation).
         println!(
-            "{{\"schema_version\":1,\"runtime\":\"lean-ctx\",\"capabilities\":[\"authority-mode-v1\",\"no-workspace-v1\",\"workspace-sibling-checkouts-v1\"]}}"
+            "{{\"schema_version\":1,\"runtime\":\"lean-ctx\",\"capabilities\":[\"authority-mode-v1\",\"no-workspace-v1\",\"workspace-sibling-checkouts-v1\",\"workspace-root-validation-v1\"]}}"
         );
         std::process::exit(0);
     }
