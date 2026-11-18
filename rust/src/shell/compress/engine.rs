@@ -349,6 +349,8 @@ pub(crate) fn compress_if_beneficial_for(
 /// `shell_inline_floor_tokens`; per-tool minimums are fractions of it
 /// (2/3 for git, 5/6 for the structured-output tools), preserving the
 /// proportions of the original hardcoded table (80/120, 100/120).
+/// The floor guards only implicit compression: explicit forced compression
+/// (`-c` / `LEAN_CTX_COMPRESS`) bypasses it.
 pub(crate) fn min_compression_tokens(command: &str, inline_floor: usize) -> usize {
     let cmd = command.to_ascii_lowercase();
     if cmd.starts_with("cargo test")
@@ -462,7 +464,11 @@ fn compress_if_beneficial_with_exit(
     // Tool-specific thresholds: test runners and structured commands benefit from
     // compression even at lower token counts. See `min_compression_tokens` for
     // the floor-sizing rationale and the configurable base.
-    if original_tokens < min_compression_tokens(command, cfg.shell_inline_floor_tokens_effective())
+    // Explicit forced compression (`-c` / LEAN_CTX_COMPRESS, e.g. the agent shell
+    // hook) overrides the floor: the caller opted in, the floor is a default.
+    if !crate::core::runtime_flags::compress_enabled()
+        && original_tokens
+            < min_compression_tokens(command, cfg.shell_inline_floor_tokens_effective())
     {
         return output.to_string();
     }
