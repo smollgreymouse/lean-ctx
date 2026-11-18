@@ -294,7 +294,9 @@ fn scenario_compress_if_beneficial_skips_git_push_output() {
 #[test]
 fn scenario_compress_if_beneficial_still_compresses_git_status() {
     let command = "git status";
-    // Output must exceed the 200-token verbatim floor (#1129).
+    // Output must exceed the git inline floor (#1129): the configurable
+    // `shell_inline_floor_tokens` (default 600) scaled 2/3 for git commands
+    // = 400 tokens, so a git status fixture needs to stay above that.
     let lines = vec![
         "On branch feature/large-refactor",
         "Your branch is ahead of 'origin/feature/large-refactor' by 3 commits.",
@@ -322,6 +324,14 @@ fn scenario_compress_if_beneficial_still_compresses_git_status() {
         "\tmodified:   src/core/rules_canonical.rs",
         "\tmodified:   src/core/rules_sections.rs",
         "\tmodified:   src/core/context_budget.rs",
+        "\tmodified:   src/core/patterns/log_dedup.rs",
+        "\tmodified:   src/core/patterns/ls_listing.rs",
+        "\tmodified:   src/core/patterns/git_status.rs",
+        "\tmodified:   src/core/patterns/build_diagnostics.rs",
+        "\tmodified:   src/core/patterns/test_summary.rs",
+        "\tmodified:   src/core/patterns/pytest.rs",
+        "\tmodified:   src/core/patterns/cargo.rs",
+        "\tmodified:   src/core/patterns/npm.rs",
         "",
         "Untracked files:",
         "  (use \"git add <file>...\" to include in what will be committed)",

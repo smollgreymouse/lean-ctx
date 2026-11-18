@@ -338,7 +338,18 @@ pub(crate) fn compress_if_beneficial_for(
 /// Per-tool minimum token threshold for compression.
 /// Test runners and structured commands benefit from compression even at lower
 /// token counts because their output has high structural redundancy.
-fn min_compression_tokens(command: &str) -> usize {
+///
+/// Sizing (#1129): the floor is the break-even between compression savings and
+/// the cost of a recovery round-trip when the elided output gets re-read from
+/// the tee log. Compression upside is capped at `savings% * tokens - footer`,
+/// while a re-read costs about the full output again plus one tool call, so
+/// status/table-sized outputs (~500-600 tokens, a real measured case: a 540
+/// token `harr status` compressed 73%, then re-read verbatim — net loss) must
+/// stay verbatim. The base floor is the user-configurable
+/// `shell_inline_floor_tokens`; per-tool minimums are fractions of it
+/// (2/3 for git, 5/6 for the structured-output tools), preserving the
+/// proportions of the original hardcoded table (80/120, 100/120).
+pub(crate) fn min_compression_tokens(command: &str, inline_floor: usize) -> usize {
     let cmd = command.to_ascii_lowercase();
     if cmd.starts_with("cargo test")
         || cmd.starts_with("pytest")
@@ -348,19 +359,19 @@ fn min_compression_tokens(command: &str) -> usize {
         || cmd.starts_with("npx jest")
         || cmd.starts_with("dotnet test")
     {
-        return 100;
+        return inline_floor * 5 / 6;
     }
     if cmd.starts_with("git ") {
-        return 80;
+        return inline_floor * 2 / 3;
     }
     if cmd.starts_with("npm audit") || cmd.starts_with("pip list") || cmd.starts_with("pip install")
     {
-        return 100;
+        return inline_floor * 5 / 6;
     }
     if cmd.starts_with("kubectl ") || cmd.starts_with("docker ") {
-        return 100;
+        return inline_floor * 5 / 6;
     }
-    120
+    inline_floor
 }
 
 fn compress_if_beneficial_with_exit(
@@ -443,13 +454,16 @@ fn compress_if_beneficial_with_exit(
     }
 
     let original_tokens = count_tokens_for(output, family);
+    let cfg = crate::core::config::Config::load();
 
     // #1129: small outputs are cheaper verbatim than compressed + tee-log round-trip.
     // The tee-log pointer alone costs ~50 tokens; a second read-back call doubles
     // the token cost. Outputs below this floor are never worth compressing.
     // Tool-specific thresholds: test runners and structured commands benefit from
-    // compression even at lower token counts.
-    if original_tokens < min_compression_tokens(command) {
+    // compression even at lower token counts. See `min_compression_tokens` for
+    // the floor-sizing rationale and the configurable base.
+    if original_tokens < min_compression_tokens(command, cfg.shell_inline_floor_tokens_effective())
+    {
         return output.to_string();
     }
 
@@ -471,7 +485,6 @@ fn compress_if_beneficial_with_exit(
 
     let min_output_tokens = 15;
 
-    let cfg = crate::core::config::Config::load();
     let policy = crate::shell::output_policy::classify(command, &cfg.excluded_commands);
     if policy == crate::shell::output_policy::OutputPolicy::Verbatim
         || policy == crate::shell::output_policy::OutputPolicy::Passthrough
