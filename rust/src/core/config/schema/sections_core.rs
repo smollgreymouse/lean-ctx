@@ -268,6 +268,15 @@ pub(super) fn build(sections: &mut BTreeMap<String, SectionSchema>) {
             ),
         );
     root.insert(
+        "shell_inline_floor_tokens".into(),
+        key_with_env(
+            "usize",
+            serde_json::json!(cfg.shell_inline_floor_tokens),
+            "Shell-output inline floor (#1129): command output below this many tokens is delivered verbatim instead of compressed; per-command minimums (git, test runners) are fractions of it. 0 disables the floor",
+            "LEAN_CTX_SHELL_INLINE_FLOOR",
+        ),
+    );
+    root.insert(
         "compression_aggressiveness".into(),
         key_with_env(
             "f64",

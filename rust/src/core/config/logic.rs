@@ -255,6 +255,17 @@ impl Config {
         }
     }
 
+    /// The shell-output inline floor (#1129): command output below this many
+    /// tokens is delivered verbatim instead of compressed. The env var
+    /// `LEAN_CTX_SHELL_INLINE_FLOOR` overrides the config field; an unparsable
+    /// value falls back to the configured field.
+    pub fn shell_inline_floor_tokens_effective(&self) -> usize {
+        match std::env::var("LEAN_CTX_SHELL_INLINE_FLOOR") {
+            Ok(raw) => raw.trim().parse().unwrap_or(self.shell_inline_floor_tokens),
+            Err(_) => self.shell_inline_floor_tokens,
+        }
+    }
+
     /// Returns `true` when the adaptive learning signals may participate in
     /// `auto` mode resolution (#683). Off by default for a deterministic,
     /// I/O-light cascade; the `LEAN_CTX_AUTO_MODE_LEARNING` env var wins over the

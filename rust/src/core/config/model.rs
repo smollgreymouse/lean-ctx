@@ -279,6 +279,15 @@ pub struct Config {
     /// `LEAN_CTX_AGGRESSIVENESS` env var or the `ctx_read` `aggressiveness` arg.
     #[serde(default)]
     pub compression_aggressiveness: Option<f64>,
+    /// Shell-output inline floor (#1129): command output below this many tokens
+    /// is delivered verbatim instead of compressed, because compression upside
+    /// is capped at `savings% * tokens - footer` while a re-read of elided
+    /// output costs about the full output again plus one tool round-trip.
+    /// Per-command minimums (git, test runners, package/kube tools) are relative
+    /// fractions of this value. `0` disables the floor. Default: 600.
+    /// Override via the `LEAN_CTX_SHELL_INLINE_FLOOR` env var.
+    #[serde(default = "serde_defaults::default_shell_inline_floor_tokens")]
+    pub shell_inline_floor_tokens: usize,
     /// Archive configuration for zero-loss compression.
     #[serde(default)]
     pub archive: ArchiveConfig,

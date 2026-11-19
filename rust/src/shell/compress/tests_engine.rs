@@ -279,8 +279,88 @@ fn small_output_stays_verbatim() {
     let compressed = super::engine::compress_if_beneficial_pub(cmd, &output);
     assert_eq!(
         compressed, output,
-        "#1129: output under 120 tokens must stay verbatim, got: {compressed}"
+        "#1129: output under the inline floor must stay verbatim, got: {compressed}"
     );
+}
+
+// #1129 floor sizing: a generic status/table output in the 120-600 token band
+// (real measured case: a 540-token `harr status` compressed 73%, then re-read
+// verbatim from the tee log — a net token loss plus one extra tool call) must
+// stay verbatim. Regression guard for the raised default floor (600 tokens).
+#[test]
+fn status_table_output_stays_verbatim() {
+    let cmd = "harr status";
+    let output: String = (0..20)
+        .map(|i| {
+            format!(
+                "  {:<12} {:<8} {:<10} record_{:02} with 42 item(s) in state ok\n",
+                ["GitLab", "Grafana", "Jira", "Kibana"][i % 4],
+                ["enabled", "disabled"][i % 2],
+                ["optional", "required"][i % 2],
+                i
+            )
+        })
+        .collect();
+    // The fixture must genuinely sit inside the old-floor(120)..new-floor(600)
+    // band for this test to guard the raised default; whitespace-heavy table
+    // rows cost more o200k tokens than their char count suggests.
+    let tokens = crate::core::tokens::count_tokens(&output);
+    assert!(
+        (120..600).contains(&tokens),
+        "fixture must sit inside the 120..600 floor band, got {tokens} tokens"
+    );
+    let compressed = super::engine::compress_if_beneficial_pub(cmd, &output);
+    assert_eq!(
+        compressed, output,
+        "#1129: status/table-sized output must stay verbatim, got: {compressed}"
+    );
+}
+
+#[test]
+fn successful_test_output_below_test_floor_stays_verbatim() {
+    let output = concat!(
+        "running 5 tests\n",
+        "test test_one ... ok\n",
+        "test test_two ... ok\n",
+        "test test_three ... ok\n",
+        "test test_four ... ok\n",
+        "test test_five ... ok\n\n",
+        "test result: ok. 5 passed; 0 failed; 0 ignored",
+    );
+    let tokens = crate::core::tokens::count_tokens(output);
+    assert!(
+        tokens < 500,
+        "fixture must be below the 500-token test floor, got {tokens}"
+    );
+    assert_ne!(
+        crate::core::patterns::test::compress(output).as_deref(),
+        Some(output),
+        "fixture must be compressible to exercise the floor"
+    );
+
+    let compressed = super::engine::compress_for_outcome("cargo test", output, 0);
+    assert_eq!(
+        compressed, output,
+        "#1129: successful test output below its inline floor must stay verbatim"
+    );
+}
+
+// #1129 floor sizing is user-configurable: per-tool minimums are fractions of
+// the configured base (git 2/3, structured tools 5/6), and 0 disables the floor.
+#[test]
+fn per_tool_floors_scale_relative_to_configured_inline_floor() {
+    assert_eq!(
+        crate::core::config::Config::default().shell_inline_floor_tokens,
+        600,
+        "#1129: default inline floor must be 600 tokens"
+    );
+    use super::engine::min_compression_tokens;
+    assert_eq!(min_compression_tokens("harr status", 600), 600);
+    assert_eq!(min_compression_tokens("git status", 600), 400);
+    assert_eq!(min_compression_tokens("cargo test", 600), 500);
+    assert_eq!(min_compression_tokens("kubectl get pods", 600), 500);
+    assert_eq!(min_compression_tokens("harr status", 0), 0);
+    assert_eq!(min_compression_tokens("git status", 0), 0);
 }
 
 #[test]

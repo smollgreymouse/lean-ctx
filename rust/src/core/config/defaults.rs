@@ -115,6 +115,7 @@ impl Default for Config {
             compression_level: CompressionLevel::default(),
             cognitive_mode: CognitiveMode::default(),
             compression_aggressiveness: None,
+            shell_inline_floor_tokens: serde_defaults::default_shell_inline_floor_tokens(),
             archive: ArchiveConfig::default(),
             memory: MemoryPolicy::default(),
             allow_paths: Vec::new(),
