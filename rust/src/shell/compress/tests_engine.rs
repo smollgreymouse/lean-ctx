@@ -318,9 +318,20 @@ fn status_table_output_stays_verbatim() {
 
 #[test]
 fn successful_test_output_below_test_floor_stays_verbatim() {
-    let output = "running 5 tests\ntest test_one ... ok\ntest test_two ... ok\ntest test_three ... ok\ntest test_four ... ok\ntest test_five ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored";
+    let output = concat!(
+        "running 5 tests\n",
+        "test test_one ... ok\n",
+        "test test_two ... ok\n",
+        "test test_three ... ok\n",
+        "test test_four ... ok\n",
+        "test test_five ... ok\n\n",
+        "test result: ok. 5 passed; 0 failed; 0 ignored",
+    );
     let tokens = crate::core::tokens::count_tokens(output);
-    assert!(tokens < 500, "fixture must be below the 500-token test floor, got {tokens}");
+    assert!(
+        tokens < 500,
+        "fixture must be below the 500-token test floor, got {tokens}"
+    );
     assert_ne!(
         crate::core::patterns::test::compress(output).as_deref(),
         Some(output),
