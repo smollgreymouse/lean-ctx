@@ -353,14 +353,7 @@ pub(crate) fn compress_if_beneficial_for(
 /// (`-c` / `LEAN_CTX_COMPRESS`) bypasses it.
 pub(crate) fn min_compression_tokens(command: &str, inline_floor: usize) -> usize {
     let cmd = command.to_ascii_lowercase();
-    if cmd.starts_with("cargo test")
-        || cmd.starts_with("pytest")
-        || cmd.starts_with("python -m pytest")
-        || cmd.starts_with("go test")
-        || cmd.starts_with("npm test")
-        || cmd.starts_with("npx jest")
-        || cmd.starts_with("dotnet test")
-    {
+    if is_test_runner_command(command) {
         return inline_floor * 5 / 6;
     }
     if cmd.starts_with("git ") {
@@ -408,6 +401,21 @@ fn compress_if_beneficial_with_exit(
         };
     }
 
+    let original_tokens = count_tokens_for(output, family);
+    let cfg = crate::core::config::Config::load();
+
+    // #1129: small outputs are cheaper verbatim than compressed + tee-log round-trip.
+    // Test-runner and build-specific compressors below must respect the same floor.
+    // The floor is configurable, with per-tool thresholds scaled from its base.
+    // Explicit forced compression (`-c` / LEAN_CTX_COMPRESS, e.g. the agent shell
+    // hook) overrides the floor: the caller opted in, the floor is a default.
+    if !crate::core::runtime_flags::compress_enabled()
+        && original_tokens
+            < min_compression_tokens(command, cfg.shell_inline_floor_tokens_effective())
+    {
+        return output.to_string();
+    }
+
     // Test-runner output: structurally compress successful runs through the
     // dedicated test-pattern compressors (cargo test, pytest, jest, etc.).
     // Failed runs (exit_code != 0) stay verbatim to preserve failure diagnostics.
@@ -452,24 +460,6 @@ fn compress_if_beneficial_with_exit(
     }
 
     if !is_search_output(command) && crate::tools::ctx_shell::contains_auth_flow(output) {
-        return output.to_string();
-    }
-
-    let original_tokens = count_tokens_for(output, family);
-    let cfg = crate::core::config::Config::load();
-
-    // #1129: small outputs are cheaper verbatim than compressed + tee-log round-trip.
-    // The tee-log pointer alone costs ~50 tokens; a second read-back call doubles
-    // the token cost. Outputs below this floor are never worth compressing.
-    // Tool-specific thresholds: test runners and structured commands benefit from
-    // compression even at lower token counts. See `min_compression_tokens` for
-    // the floor-sizing rationale and the configurable base.
-    // Explicit forced compression (`-c` / LEAN_CTX_COMPRESS, e.g. the agent shell
-    // hook) overrides the floor: the caller opted in, the floor is a default.
-    if !crate::core::runtime_flags::compress_enabled()
-        && original_tokens
-            < min_compression_tokens(command, cfg.shell_inline_floor_tokens_effective())
-    {
         return output.to_string();
     }
 
